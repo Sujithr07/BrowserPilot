@@ -1,0 +1,11 @@
+fastapi
+uvicorn
+websockets
+crewai
+playwright
+pydantic
+groq
+google-generativeai
+python-dotenv
+sqlalchemy
+aiosqlite
