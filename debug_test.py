@@ -3,18 +3,21 @@ import os
 from dotenv import load_dotenv
 load_dotenv()
 
+
 async def debug():
     print("=== API Keys ===")
     groq_key = os.getenv("GROQ_API_KEY")
     gemini_key = os.getenv("GEMINI_API_KEY")
-    print(f"Groq: {'✓ Found' if groq_key else '✗ MISSING'}")
+    print(f"Groq:   {'✓ Found' if groq_key else '✗ MISSING'}")
     print(f"Gemini: {'✓ Found' if gemini_key else '✗ MISSING'}")
 
     print("\n=== Schemas ===")
     from backend.schemas import TaskPlan, TaskStep, TaskTool
-    step = TaskStep(step_number=1, tool=TaskTool.navigate,
-                    target="https://example.com",
-                    instruction="test", expected_outcome="test")
+    step = TaskStep(
+        step_number=1, tool=TaskTool.navigate,
+        target="https://example.com",
+        instruction="test", expected_outcome="test",
+    )
     print("✓ Schemas import OK")
 
     print("\n=== Playwright Browser ===")
@@ -42,26 +45,50 @@ async def debug():
     else:
         print("✗ Skipped (no Groq key)")
 
-    print("\n=== Gemini Vision ===")
+    print("\n=== Groq Tool Calling ===")
+    if groq_key:
+        from groq import Groq
+        from backend.agents.executor import BROWSER_TOOLS
+        try:
+            client = Groq(api_key=groq_key)
+            response = client.chat.completions.create(
+                model="llama-3.3-70b-versatile",
+                messages=[
+                    {"role": "system", "content": "You are a browser agent. Use the tools provided."},
+                    {"role": "user", "content": "Navigate to https://example.com"},
+                ],
+                tools=BROWSER_TOOLS,
+                tool_choice="required",
+                temperature=0.1,
+            )
+            tc = response.choices[0].message.tool_calls
+            if tc:
+                print(f"✓ Tool calling OK — LLM called: {tc[0].function.name}({tc[0].function.arguments})")
+            else:
+                print("✗ Tool calling: no tool_calls in response")
+        except Exception as e:
+            print(f"✗ Tool calling FAILED: {type(e).__name__}: {e}")
+    else:
+        print("✗ Skipped (no Groq key)")
+
+    print("\n=== Gemini Vision (google-genai SDK) ===")
     if gemini_key and os.path.exists("screenshots/debug_test.png"):
         try:
-            import google.generativeai as genai
-            genai.configure(api_key=gemini_key)
-            model = genai.GenerativeModel("gemini-2.0-flash")
-            with open("screenshots/debug_test.png", "rb") as f:
-                img_data = f.read()
-            import base64
-            base64_image = base64.b64encode(img_data).decode("utf-8")
-            response = model.generate_content([
-                "What do you see in this screenshot? Reply in one sentence.",
-                {"mime_type": "image/png", "data": base64_image}
-            ])
-            print(f"✓ Gemini OK — {response.text[:100]}")
+            from google import genai
+            import PIL.Image
+            client = genai.Client(api_key=gemini_key)
+            image = PIL.Image.open("screenshots/debug_test.png")
+            response = client.models.generate_content(
+                model="gemini-2.0-flash",
+                contents=["What do you see in this screenshot? Reply in one sentence.", image],
+            )
+            print(f"✓ Gemini Vision OK — {response.text.strip()[:120]}")
         except Exception as e:
-            print(f"✗ Gemini FAILED: {type(e).__name__}: {e}")
+            print(f"✗ Gemini Vision FAILED: {type(e).__name__}: {e}")
     else:
-        print("✗ Skipped (no key or no screenshot)")
+        print("✗ Skipped (no key or no screenshot — run browser test first)")
 
     print("\n=== Done ===")
+
 
 asyncio.run(debug())
