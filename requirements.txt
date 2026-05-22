@@ -5,7 +5,8 @@ crewai
 playwright
 pydantic
 groq
-google-generativeai
+google-genai
+pillow
 python-dotenv
 sqlalchemy
 aiosqlite

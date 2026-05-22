@@ -1,9 +1,9 @@
 import os
-import base64
 import json
-import asyncio
 import hashlib
-import google.generativeai as genai
+import PIL.Image
+from google import genai
+from google.genai import types
 
 from backend.browser import BrowserManager
 from backend.schemas import TaskPlan, StepResult, TaskTool
@@ -14,9 +14,71 @@ class ExecutorAgent:
         api_key = os.getenv("GEMINI_API_KEY")
         if not api_key:
             raise ValueError("GEMINI_API_KEY environment variable is not set")
-        genai.configure(api_key=api_key)
-        self.model = genai.GenerativeModel("gemini-1.5-flash")
+        self.client = genai.Client(api_key=api_key)
+        self.model = "gemini-2.0-flash"
         self.browser = BrowserManager()
+
+    async def _observe_page(self, screenshot_path: str, step) -> dict:
+        """
+        Send the screenshot to Gemini Vision and get a structured observation.
+        Returns a dict with observation, visual success flag, extracted data, and any issue detected.
+        Falls back gracefully if vision fails.
+        """
+        try:
+            image = PIL.Image.open(screenshot_path)
+
+            prompt = f"""You are a browser automation agent reviewing a screenshot taken after executing a step.
+
+Step context:
+- Tool used: {step.tool}
+- Target: {step.target}
+- Instruction: {step.instruction}
+- Expected outcome: {step.expected_outcome}
+
+Analyze the screenshot and respond with ONLY a valid JSON object (no markdown fences, no explanation):
+{{
+  "observation": "1-2 sentences describing exactly what is visible on screen right now",
+  "step_succeeded_visually": true or false,
+  "extracted_data": {{}},
+  "issue": null
+}}
+
+Rules:
+- "observation": describe the actual page content visible — page title, main content, any forms, results, errors
+- "step_succeeded_visually": true if the screen matches the expected outcome, false if you see an error page, CAPTCHA, login wall, wrong page, or blocked content
+- "extracted_data": include any useful information visible — prices, search results, article text, product names, error messages, headings
+- "issue": null if everything looks correct; otherwise a short description of the problem (e.g. "CAPTCHA detected", "404 error page", "login required", "rate limited")"""
+
+            response = self.client.models.generate_content(
+                model=self.model,
+                contents=[prompt, image],
+            )
+            text = response.text.strip()
+
+            # Strip markdown code fences if model wrapped the JSON
+            if text.startswith("```"):
+                parts = text.split("```")
+                text = parts[1].lstrip("json").strip() if len(parts) > 1 else text
+
+            return json.loads(text)
+
+        except json.JSONDecodeError:
+            # Vision responded but output wasn't valid JSON — use raw text as observation
+            raw = response.text.strip()[:400] if "response" in dir() else "Page state observed"
+            return {
+                "observation": raw,
+                "step_succeeded_visually": None,
+                "extracted_data": {},
+                "issue": None,
+            }
+        except Exception as e:
+            # Vision call failed entirely — return empty fallback, don't crash the pipeline
+            return {
+                "observation": "",
+                "step_succeeded_visually": None,
+                "extracted_data": {},
+                "issue": f"Vision unavailable: {e}",
+            }
 
     async def execute_plan(self, plan: TaskPlan) -> list[StepResult]:
         results = []
@@ -46,6 +108,7 @@ class ExecutorAgent:
             observation = ""
             extracted_data = {}
 
+            # Execute the browser action
             try:
                 if step.tool == TaskTool.navigate:
                     await self.browser.navigate(step.target)
@@ -66,48 +129,33 @@ class ExecutorAgent:
                 error_msg = str(e)
                 observation = error_msg
 
+            # Take screenshot (always attempt, even on action failure)
             try:
                 await self.browser.take_screenshot(screenshot_path)
             except Exception as e:
+                screenshot_path = None
                 if not error_msg:
                     error_msg = f"Screenshot failed: {e}"
-                success = False
-                screenshot_path = None
+                    success = False
 
-            if success and screenshot_path and os.path.exists(screenshot_path):
-                try:
-                    with open(screenshot_path, "rb") as f:
-                        image_bytes = f.read()
-                    base64_image = base64.b64encode(image_bytes).decode("utf-8")
+            # Vision observation — run on every step that has a screenshot
+            if screenshot_path and os.path.exists(screenshot_path):
+                vision = await self._observe_page(screenshot_path, step)
 
-                    prompt_text = (
-                        f"Look at this browser screenshot. The intended action was: {step.instruction}\n"
-                        f"The expected outcome was: {step.expected_outcome}\n"
-                        f"Did this step succeed? What do you see on screen?\n"
-                        f'Reply in JSON: {{"success": true/false, "observation": "what you see", '
-                        f'"extracted_data": {{}}}}'
-                    )
+                # Use vision's description as the canonical observation
+                if vision["observation"]:
+                    observation = vision["observation"]
 
-                    response = self.model.generate_content(
-                        [
-                            {"mime_type": "image/png", "data": base64_image},
-                            prompt_text,
-                        ]
-                    )
+                # Merge any data Gemini extracted from the page
+                if vision.get("extracted_data"):
+                    extracted_data = vision["extracted_data"]
 
-                    response_text = response.text
-                    json_text = response_text
-                    if "```json" in json_text:
-                        json_text = json_text.split("```json")[1].split("```")[0].strip()
-                    elif "```" in json_text:
-                        json_text = json_text.split("```")[1].split("```")[0].strip()
-
-                    parsed = json.loads(json_text)
-                    success = parsed.get("success", success)
-                    observation = parsed.get("observation", observation)
-                    extracted_data = parsed.get("extracted_data", extracted_data)
-                except Exception as e:
-                    observation = f"Gemini analysis failed: {e}"
+                # If the action appeared to succeed but Gemini sees a clear failure on screen,
+                # override the success flag so the verifier and frontend know
+                if success and vision.get("step_succeeded_visually") is False:
+                    success = False
+                    issue = vision.get("issue") or "Visual check: step did not succeed as expected"
+                    error_msg = issue
 
             results.append(
                 StepResult(
