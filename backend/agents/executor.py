@@ -1,12 +1,60 @@
 import os
 import json
 import hashlib
+from collections import OrderedDict
 import PIL.Image
 from google import genai
 from groq import Groq
 
 from backend.browser import BrowserManager
 from backend.schemas import TaskPlan, StepResult
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# LRU cache for Gemini Vision observations.
+# Keyed by sha256(screenshot bytes) + sha256(context JSON) so identical page
+# states never trigger a redundant API call, even across separate task runs.
+# ─────────────────────────────────────────────────────────────────────────────
+class _ObservationCache:
+    def __init__(self, maxsize: int = 64):
+        self._store: OrderedDict[str, dict] = OrderedDict()
+        self._maxsize = maxsize
+        self.hits = 0
+        self.misses = 0
+
+    def _key(self, screenshot_path: str, context: dict) -> str | None:
+        try:
+            with open(screenshot_path, "rb") as f:
+                img_hash = hashlib.sha256(f.read()).hexdigest()
+            ctx_hash = hashlib.sha256(
+                json.dumps(context, sort_keys=True).encode()
+            ).hexdigest()
+            return f"{img_hash}:{ctx_hash}"
+        except Exception:
+            return None
+
+    def get(self, screenshot_path: str, context: dict) -> dict | None:
+        key = self._key(screenshot_path, context)
+        if key and key in self._store:
+            self._store.move_to_end(key)
+            self.hits += 1
+            return self._store[key]
+        self.misses += 1
+        return None
+
+    def set(self, screenshot_path: str, context: dict, value: dict) -> None:
+        key = self._key(screenshot_path, context)
+        if key is None:
+            return
+        if key in self._store:
+            self._store.move_to_end(key)
+        else:
+            if len(self._store) >= self._maxsize:
+                self._store.popitem(last=False)
+        self._store[key] = value
+
+
+_observation_cache = _ObservationCache(maxsize=64)
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Formal JSON-schema tool definitions for Groq function calling.
@@ -135,6 +183,17 @@ BROWSER_TOOLS = [
     },
 ]
 
+RISKY_ACTIONS = ["submit", "delete", "purchase", "confirm", "send"]
+
+# Fixed system instruction sent with every vision call.
+# Registered as a CachedContent at init so Gemini can reuse it across calls
+# without re-processing the tokens each time.
+VISION_SYSTEM = """You are a web automation validator. Analyze this screenshot and answer:
+1. Did the step succeed? (true/false)
+2. What do you see on the page? (description)
+3. Extract any requested data? (as JSON)
+Reply ONLY in JSON format: {"success": bool, "observation": str, "extracted_data": {}}"""
+
 SYSTEM_PROMPT = """You are a browser automation agent. Use the provided tools to complete the user's goal step by step.
 
 After each tool call you will receive a visual observation describing what is currently on screen.
@@ -159,12 +218,31 @@ class ExecutorAgent:
 
         # Gemini Vision — observes each screenshot after an action
         self.vision_client = genai.Client(api_key=gemini_key)
-        self.vision_model = "gemini-2.0-flash"
+        self.vision_model = "gemini-2.0-flash-001"
+
+        # Try to register the fixed system instruction as a CachedContent so
+        # Gemini reuses it across calls without re-processing its tokens.
+        # Falls back to None when the API rejects the cache (e.g. minimum-token
+        # requirement not met), in which case we send system_instruction inline.
+        self._vision_cache_name: str | None = self._create_vision_cache()
 
         # Groq — drives the agentic tool-calling loop
         self.groq = Groq(api_key=groq_key)
 
         self.browser = BrowserManager()
+
+    def _create_vision_cache(self) -> str | None:
+        try:
+            cache = self.vision_client.caches.create(
+                model=self.vision_model,
+                config=genai.types.CreateCachedContentConfig(
+                    system_instruction=VISION_SYSTEM,
+                    ttl="300s",
+                ),
+            )
+            return cache.name
+        except Exception:
+            return None
 
     # ─────────────────────────────────────────────────────────────────────────
     # Vision observation
@@ -175,35 +253,45 @@ class ExecutorAgent:
         Send the screenshot to Gemini Vision and return a structured observation.
         context keys: tool, target, instruction, expected_outcome
         Returns a fallback dict on any error so the pipeline never crashes.
+
+        Two caching layers:
+        1. Client-side LRU (identical screenshots skip the API entirely).
+        2. Server-side CachedContent: VISION_SYSTEM is registered once and
+           reused by name so Gemini never re-processes those tokens.
+           Falls back to inline system_instruction when the cache is unavailable.
         """
+        cached = _observation_cache.get(screenshot_path, context)
+        if cached is not None:
+            return cached
+
         try:
             image = PIL.Image.open(screenshot_path)
 
-            prompt = f"""You are a browser automation agent reviewing a screenshot taken after executing a step.
+            # Variable part — only the step-specific context changes per call.
+            step_prompt = (
+                f"Step context:\n"
+                f"- Tool used: {context.get('tool', '')}\n"
+                f"- Target: {context.get('target', '')}\n"
+                f"- Instruction: {context.get('instruction', '')}\n"
+                f"- Expected outcome: {context.get('expected_outcome', 'Action completes successfully')}\n\n"
+                f"Analyze the screenshot above and respond with ONLY valid JSON, no markdown."
+            )
 
-Step context:
-- Tool used: {context.get('tool', '')}
-- Target: {context.get('target', '')}
-- Instruction: {context.get('instruction', '')}
-- Expected outcome: {context.get('expected_outcome', 'Action completes successfully')}
-
-Analyze the screenshot and respond with ONLY a valid JSON object (no markdown fences, no explanation):
-{{
-  "observation": "1-2 sentences describing exactly what is visible on screen right now",
-  "step_succeeded_visually": true or false,
-  "extracted_data": {{}},
-  "issue": null
-}}
-
-Rules:
-- "observation": describe the actual page content — title, main content, forms, results, errors
-- "step_succeeded_visually": true if the screen matches the expected outcome; false for error pages, CAPTCHAs, login walls, wrong pages
-- "extracted_data": include any useful information visible — prices, search results, article text, product names, headings
-- "issue": null if everything looks correct; otherwise a short description (e.g. "CAPTCHA detected", "404 error page", "login required")"""
+            # Build config: prefer the registered CachedContent, fall back to
+            # passing VISION_SYSTEM inline as system_instruction.
+            if self._vision_cache_name:
+                config = genai.types.GenerateContentConfig(
+                    cached_content=self._vision_cache_name,
+                )
+            else:
+                config = genai.types.GenerateContentConfig(
+                    system_instruction=VISION_SYSTEM,
+                )
 
             response = self.vision_client.models.generate_content(
                 model=self.vision_model,
-                contents=[prompt, image],
+                contents=[image, step_prompt],
+                config=config,
             )
             text = response.text.strip()
 
@@ -212,11 +300,23 @@ Rules:
                 parts = text.split("```")
                 text = parts[1].lstrip("json").strip() if len(parts) > 1 else text
 
-            return json.loads(text)
+            raw = json.loads(text)
+
+            # Normalise to the internal schema used by the rest of the pipeline.
+            # The new VISION_SYSTEM uses {"success", "observation", "extracted_data"};
+            # map "success" → "step_succeeded_visually" for backward compatibility.
+            result = {
+                "observation": raw.get("observation", ""),
+                "step_succeeded_visually": raw.get("success", raw.get("step_succeeded_visually")),
+                "extracted_data": raw.get("extracted_data", {}),
+                "issue": raw.get("issue"),
+            }
+            _observation_cache.set(screenshot_path, context, result)
+            return result
 
         except json.JSONDecodeError:
-            raw = response.text.strip()[:400] if "response" in dir() else "Page state observed"
-            return {"observation": raw, "step_succeeded_visually": None, "extracted_data": {}, "issue": None}
+            raw_text = response.text.strip()[:400] if "response" in dir() else "Page state observed"
+            return {"observation": raw_text, "step_succeeded_visually": None, "extracted_data": {}, "issue": None}
         except Exception as e:
             return {"observation": "", "step_succeeded_visually": None, "extracted_data": {}, "issue": f"Vision unavailable: {e}"}
 
@@ -252,7 +352,7 @@ Rules:
     # Main agentic loop
     # ─────────────────────────────────────────────────────────────────────────
 
-    async def execute_plan(self, plan: TaskPlan) -> list[StepResult]:
+    async def execute_plan(self, plan: TaskPlan, approval_callback=None) -> list[StepResult]:
         """
         Run an agentic tool-calling loop driven by Groq function calling.
         The LLM picks each browser tool dynamically based on the visual
@@ -340,7 +440,27 @@ Rules:
                     messages.append({"role": "tool", "content": observation, "tool_call_id": tool_call.id})
                     break
 
-                # ── 3. Execute the chosen browser action ─────────────────────
+                # ── 3. Risky action gate — pause and wait for human approval ─
+                instruction_str = f"{tool_name}({json.dumps(tool_args)})"
+                if approval_callback and any(word in instruction_str.lower() for word in RISKY_ACTIONS):
+                    approved = await approval_callback({
+                        "step_number": step_num,
+                        "tool": tool_name,
+                        "args": tool_args,
+                        "instruction": instruction_str,
+                    })
+                    if not approved:
+                        results.append(StepResult(
+                            step_number=step_num,
+                            success=False,
+                            observation="Action denied by user",
+                            extracted_data={},
+                            screenshot_path=None,
+                            error="User denied execution of risky action",
+                        ))
+                        break
+
+                # ── 4. Execute the chosen browser action ─────────────────────
                 try:
                     tool_result = await self._execute_tool_call(tool_name, tool_args)
                 except Exception as e:
@@ -348,7 +468,7 @@ Rules:
                     error_msg = str(e)
                     tool_result = f"Error: {e}"
 
-                # ── 4. Take screenshot ────────────────────────────────────────
+                # ── 5. Take screenshot ────────────────────────────────────────
                 try:
                     await self.browser.take_screenshot(screenshot_path)
                 except Exception as e:
@@ -357,7 +477,7 @@ Rules:
                         error_msg = f"Screenshot failed: {e}"
                         success = False
 
-                # ── 5. Vision observation — primary source of truth ───────────
+                # ── 6. Vision observation — primary source of truth ───────────
                 if screenshot_path and os.path.exists(screenshot_path):
                     target = (
                         tool_args.get("url")
@@ -386,7 +506,7 @@ Rules:
                 else:
                     observation = tool_result
 
-                # ── 6. Feed observation back into the conversation ────────────
+                # ── 7. Feed observation back into the conversation ────────────
                 messages.append({
                     "role": "assistant",
                     "content": message.content,

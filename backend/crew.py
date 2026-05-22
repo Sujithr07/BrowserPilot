@@ -21,6 +21,7 @@ class AgentFlowCrew:
         goal: str,
         task_id: str,
         progress_callback=None,
+        approval_callback=None,
     ) -> TaskReport:
         # Step 1: Plan
         plan = await self.planner.plan(goal)
@@ -28,7 +29,7 @@ class AgentFlowCrew:
             await progress_callback("planned", plan.model_dump())
 
         # Step 2: Execute
-        results = await self.executor.execute_plan(plan)
+        results = await self.executor.execute_plan(plan, approval_callback=approval_callback)
         for result in results:
             if progress_callback is not None:
                 await progress_callback("step_done", result.model_dump())

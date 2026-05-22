@@ -8,6 +8,7 @@ function App() {
   const [taskId, setTaskId] = useState('')
   const [events, setEvents] = useState([])
   const [isRunning, setIsRunning] = useState(false)
+  const [pendingApproval, setPendingApproval] = useState(null)
   const [replayTaskId, setReplayTaskId] = useState('')
   const [replayData, setReplayData] = useState(null)
   const [currentStep, setCurrentStep] = useState(0)
@@ -34,8 +35,15 @@ function App() {
       
       wsRef.current.onmessage = (event) => {
         const message = JSON.parse(event.data)
+
+        if (message.event === 'approval_required') {
+          setPendingApproval(message.data)
+          setEvents(prev => [...prev, message])
+          return
+        }
+
         setEvents(prev => [...prev, message])
-        
+
         if (message.event === 'completed' || message.event === 'error') {
           setIsRunning(false)
           wsRef.current.close()
@@ -71,6 +79,13 @@ function App() {
     }
   }
 
+  const handleApproval = (approved) => {
+    if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
+      wsRef.current.send(JSON.stringify({ type: 'approval_response', approved }))
+    }
+    setPendingApproval(null)
+  }
+
   const nextStep = () => {
     if (replayData && currentStep < replayData.step_results.length - 1) {
       setCurrentStep(prev => prev + 1)
@@ -85,6 +100,41 @@ function App() {
 
   return (
     <div className="min-h-screen bg-gray-50 font-sans">
+      {/* Approval Modal */}
+      {pendingApproval && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50">
+          <div className="bg-white rounded-xl shadow-xl border border-amber-300 p-6 max-w-md w-full mx-4">
+            <div className="flex items-center gap-2 mb-3">
+              <span className="text-amber-500 text-xl">&#9888;</span>
+              <h2 className="text-lg font-semibold text-gray-800">Approval Required</h2>
+            </div>
+            <p className="text-gray-600 text-sm mb-3">
+              The agent wants to perform a potentially irreversible action:
+            </p>
+            <div className="bg-gray-50 rounded-lg border border-gray-200 p-3 font-mono text-sm text-gray-800 mb-4 break-all">
+              {pendingApproval.instruction}
+            </div>
+            <div className="text-xs text-gray-500 mb-5">
+              Step {pendingApproval.step_number} &middot; Tool: <span className="font-medium">{pendingApproval.tool}</span>
+            </div>
+            <div className="flex gap-3">
+              <button
+                onClick={() => handleApproval(true)}
+                className="flex-1 py-2 rounded-lg bg-green-600 text-white font-medium hover:bg-green-700 transition-colors"
+              >
+                Approve
+              </button>
+              <button
+                onClick={() => handleApproval(false)}
+                className="flex-1 py-2 rounded-lg bg-red-600 text-white font-medium hover:bg-red-700 transition-colors"
+              >
+                Deny
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* Header */}
       <header className="bg-white border-b border-gray-200 shadow-sm">
         <div className="max-w-4xl mx-auto px-4 py-4">
@@ -161,6 +211,14 @@ function App() {
                                 Step {step.step_number}: {step.tool} {step.target}
                               </div>
                             ))}
+                          </div>
+                        </>
+                      )}
+                      {event.event === 'approval_required' && (
+                        <>
+                          <span className="w-2 h-2 rounded-full bg-amber-500 mt-1.5 flex-shrink-0"></span>
+                          <div className="text-amber-700">
+                            Step {event.data.step_number}: Approval requested — <span className="font-medium">{event.data.instruction}</span>
                           </div>
                         </>
                       )}
