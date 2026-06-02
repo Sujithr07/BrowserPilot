@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef } from 'react'
 
-const API_URL = 'http://localhost:8000'
+const API_URL = 'http://localhost:8001'
 
 function App() {
   const [view, setView] = useState('run') // 'run' or 'replay'
@@ -31,7 +31,7 @@ function App() {
       setTaskId(data.task_id)
       
       // Connect WebSocket
-      wsRef.current = new WebSocket(`ws://localhost:8000/ws/task/${data.task_id}`)
+      wsRef.current = new WebSocket(`ws://localhost:8001/ws/task/${data.task_id}`)
       
       wsRef.current.onmessage = (event) => {
         const message = JSON.parse(event.data)
@@ -206,6 +206,19 @@ function App() {
                           <span className="w-2 h-2 rounded-full bg-yellow-500 mt-1.5 flex-shrink-0"></span>
                           <div>
                             <div className="text-gray-800">Plan created — {event.data.estimated_steps} steps</div>
+                            {event.data.steps?.map((step, sIdx) => (
+                              <div key={sIdx} className="text-gray-600 ml-4 mt-1">
+                                Step {step.step_number}: {step.tool} {step.target}
+                              </div>
+                            ))}
+                          </div>
+                        </>
+                      )}
+                      {event.event === 'replanned' && (
+                        <>
+                          <span className="w-2 h-2 rounded-full bg-blue-500 mt-1.5 flex-shrink-0"></span>
+                          <div>
+                            <div className="text-blue-700 font-medium">Re-planning — {event.data.estimated_steps} recovery steps</div>
                             {event.data.steps?.map((step, sIdx) => (
                               <div key={sIdx} className="text-gray-600 ml-4 mt-1">
                                 Step {step.step_number}: {step.tool} {step.target}

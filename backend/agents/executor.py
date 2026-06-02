@@ -352,12 +352,16 @@ class ExecutorAgent:
     # Main agentic loop
     # ─────────────────────────────────────────────────────────────────────────
 
-    async def execute_plan(self, plan: TaskPlan, approval_callback=None) -> list[StepResult]:
+    async def execute_plan(
+        self,
+        plan: TaskPlan,
+        approval_callback=None,
+        step_offset: int = 0,
+    ) -> list[StepResult]:
         """
         Run an agentic tool-calling loop driven by Groq function calling.
-        The LLM picks each browser tool dynamically based on the visual
-        observation returned after every action, rather than following a
-        pre-written script.
+        step_offset shifts step numbers so re-plan steps continue from where the
+        original execution left off (e.g. offset=5 means steps start at 6).
         """
         results = []
         task_id = hashlib.md5(plan.goal.encode()).hexdigest()[:8]
@@ -397,7 +401,8 @@ class ExecutorAgent:
         MAX_STEPS = 15
 
         for step_num in range(1, MAX_STEPS + 1):
-            screenshot_path = f"screenshots/{task_id}_{step_num}.png"
+            actual_step = step_num + step_offset
+            screenshot_path = f"screenshots/{task_id}_{actual_step}.png"
             success = True
             error_msg = None
             observation = ""
@@ -444,14 +449,14 @@ class ExecutorAgent:
                 instruction_str = f"{tool_name}({json.dumps(tool_args)})"
                 if approval_callback and any(word in instruction_str.lower() for word in RISKY_ACTIONS):
                     approved = await approval_callback({
-                        "step_number": step_num,
+                        "step_number": actual_step,
                         "tool": tool_name,
                         "args": tool_args,
                         "instruction": instruction_str,
                     })
                     if not approved:
                         results.append(StepResult(
-                            step_number=step_num,
+                            step_number=actual_step,
                             success=False,
                             observation="Action denied by user",
                             extracted_data={},
@@ -525,12 +530,12 @@ class ExecutorAgent:
             except Exception as e:
                 success = False
                 error_msg = str(e)
-                observation = f"Unexpected error at step {step_num}: {e}"
+                observation = f"Unexpected error at step {actual_step}: {e}"
                 screenshot_path = None
 
             results.append(
                 StepResult(
-                    step_number=step_num,
+                    step_number=actual_step,
                     success=success,
                     observation=observation,
                     extracted_data=extracted_data,
