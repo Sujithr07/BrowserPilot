@@ -1,3 +1,200 @@
-@tailwind base;
-@tailwind components;
-@tailwind utilities;
+:root {
+  --bg: #f5f6f8;
+  --card: #ffffff;
+  --border: #e2e5ea;
+  --text: #1f2430;
+  --muted: #6b7280;
+  --blue: #2563eb;
+  --blue-dark: #1d4ed8;
+  --green: #16a34a;
+  --red: #dc2626;
+  --amber: #d97706;
+}
+
+* { box-sizing: border-box; }
+
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--text);
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+  font-size: 15px;
+  line-height: 1.5;
+}
+
+.container {
+  max-width: 760px;
+  margin: 0 auto;
+  padding: 24px 16px 48px;
+}
+
+.header h1 {
+  font-size: 20px;
+  font-weight: 600;
+  margin: 0 0 16px;
+}
+
+/* Tabs */
+.tabs {
+  display: flex;
+  gap: 8px;
+  margin-bottom: 20px;
+}
+.tab {
+  padding: 8px 16px;
+  border: 1px solid var(--border);
+  background: var(--card);
+  border-radius: 8px;
+  font-size: 14px;
+  font-weight: 500;
+  color: var(--text);
+  cursor: pointer;
+}
+.tab.active {
+  background: var(--blue);
+  border-color: var(--blue);
+  color: #fff;
+}
+
+/* Card */
+.card {
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 20px;
+  margin-bottom: 20px;
+}
+.card h2 {
+  font-size: 16px;
+  font-weight: 600;
+  margin: 0 0 14px;
+}
+
+/* Inputs */
+.textarea, .input {
+  width: 100%;
+  padding: 12px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  font-size: 14px;
+  font-family: inherit;
+  color: var(--text);
+  resize: vertical;
+}
+.textarea { min-height: 110px; }
+.textarea:focus, .input:focus {
+  outline: none;
+  border-color: var(--blue);
+  box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.15);
+}
+
+/* Buttons */
+.btn {
+  margin-top: 14px;
+  padding: 10px 20px;
+  border: none;
+  border-radius: 8px;
+  font-size: 14px;
+  font-weight: 500;
+  cursor: pointer;
+}
+.btn-primary { background: var(--blue); color: #fff; }
+.btn-primary:hover:not(:disabled) { background: var(--blue-dark); }
+.btn-secondary { background: #e5e7eb; color: var(--text); margin-top: 0; }
+.btn-secondary:hover:not(:disabled) { background: #d1d5db; }
+.btn:disabled { opacity: 0.55; cursor: not-allowed; }
+
+/* Execution log */
+.log { display: flex; flex-direction: column; gap: 8px; }
+.log-row {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  font-size: 14px;
+}
+.dot {
+  width: 8px; height: 8px;
+  border-radius: 50%;
+  margin-top: 7px;
+  flex-shrink: 0;
+}
+.dot-green { background: var(--green); }
+.dot-red { background: var(--red); }
+.dot-amber { background: var(--amber); }
+.dot-blue { background: var(--blue); }
+.dot-yellow { background: #eab308; }
+.sub { color: var(--muted); margin-left: 14px; margin-top: 2px; }
+.text-red { color: var(--red); }
+.text-amber { color: var(--amber); }
+.text-blue { color: var(--blue); font-weight: 500; }
+
+/* Final answer */
+.final {
+  margin-top: 16px;
+  padding: 16px;
+  background: #f0fdf4;
+  border: 1px solid #bbf7d0;
+  border-radius: 8px;
+}
+.final h3 { margin: 0 0 6px; color: #166534; font-size: 14px; }
+.final p { margin: 0; color: #15803d; white-space: pre-wrap; }
+
+/* Replay */
+.replay-nav {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 14px;
+}
+.replay-nav span { color: var(--muted); font-size: 14px; }
+.step-box {
+  padding: 14px;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+}
+.step-box .field { margin-top: 6px; }
+.step-box .field b { font-weight: 600; }
+pre {
+  background: #f1f3f5;
+  padding: 8px;
+  border-radius: 6px;
+  font-size: 12px;
+  overflow: auto;
+}
+
+/* Approval modal */
+.overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(0,0,0,0.45);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 50;
+}
+.modal {
+  background: #fff;
+  border-radius: 12px;
+  border: 1px solid #fcd34d;
+  padding: 22px;
+  max-width: 420px;
+  width: 90%;
+  box-shadow: 0 10px 40px rgba(0,0,0,0.2);
+}
+.modal h2 { margin: 0 0 10px; font-size: 17px; }
+.modal .instruction {
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 10px;
+  font-family: monospace;
+  font-size: 13px;
+  word-break: break-all;
+  margin: 10px 0;
+}
+.modal .meta { font-size: 12px; color: var(--muted); margin-bottom: 16px; }
+.modal-actions { display: flex; gap: 10px; }
+.modal-actions .btn { margin-top: 0; flex: 1; }
+.btn-approve { background: var(--green); color: #fff; }
+.btn-deny { background: var(--red); color: #fff; }
