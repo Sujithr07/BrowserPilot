@@ -1,6 +1,6 @@
 import { useState, useRef } from 'react'
 
-const API_URL = 'http://localhost:8001'
+const API_URL = 'http://localhost:8000'
 
 function App() {
   const [view, setView] = useState('run') // 'run' or 'replay'
@@ -26,7 +26,7 @@ function App() {
       })
       const data = await response.json()
 
-      wsRef.current = new WebSocket(`ws://localhost:8001/ws/task/${data.task_id}`)
+      wsRef.current = new WebSocket(`ws://localhost:8000/ws/task/${data.task_id}`)
 
       wsRef.current.onmessage = (event) => {
         const message = JSON.parse(event.data)
@@ -253,7 +253,12 @@ function LogRow({ event }) {
       <div className="log-row">
         <span className={`dot ${data.success ? 'dot-green' : 'dot-red'}`}></span>
         <div>
-          Step {data.step_number}: {data.observation} — {data.success ? 'success' : 'failed'}
+          <div>
+            Step {data.step_number}: {data.observation || (data.success ? 'done' : 'no observation')} — {data.success ? 'success' : 'failed'}
+          </div>
+          {!data.success && data.error && (
+            <div className="sub text-red">{data.error}</div>
+          )}
         </div>
       </div>
     )

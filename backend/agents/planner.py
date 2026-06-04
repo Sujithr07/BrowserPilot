@@ -7,7 +7,9 @@ load_dotenv()
 
 _PLAN_SYSTEM = """You are a web task planner. Given a user goal, decompose it into a sequence of browser steps. Each step must use one of these tools:
     navigate (go to URL), click (click element), type_text (type into field),
-    extract (extract visible text from page), search (search on google).
+    extract (extract visible text from page), search (open a search results page for a query).
+    Prefer navigating directly to well-known sites (e.g. https://en.wikipedia.org/wiki/<Topic>) over searching.
+    When you must search, use the search tool — never plan to type into a search engine's box.
     Return ONLY valid JSON matching this schema, no other text:
     {
       "goal": "...",

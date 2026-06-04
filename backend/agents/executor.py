@@ -1,4 +1,5 @@
 import os
+import re
 import json
 import hashlib
 from collections import OrderedDict
@@ -185,6 +186,38 @@ BROWSER_TOOLS = [
 
 RISKY_ACTIONS = ["submit", "delete", "purchase", "confirm", "send"]
 
+# Groq's Llama models occasionally emit a tool call as a raw text blob instead of
+# a structured tool_calls object, e.g.:
+#     <function=navigate{"url": "https://..."}</function>
+# The API then rejects the whole request with a 400 `tool_use_failed`, exposing
+# the offending text under error['failed_generation']. We recover by parsing the
+# function name + JSON args back out of that blob.
+_FAILED_GEN_RE = re.compile(r"<function=([A-Za-z_]\w*)\s*(\{.*?\})\s*</?function>", re.DOTALL)
+
+
+def _extract_failed_generation(err: Exception) -> str | None:
+    """Pull error['failed_generation'] out of a Groq tool_use_failed exception."""
+    body = getattr(err, "body", None)
+    if isinstance(body, dict):
+        gen = body.get("error", {}).get("failed_generation")
+        if gen:
+            return gen
+    # Fall back to scraping the stringified error if the SDK didn't expose .body
+    match = re.search(r"'failed_generation':\s*'(.*?)'\}\}", str(err), re.DOTALL)
+    return match.group(1) if match else None
+
+
+def _parse_failed_generation(generation: str) -> tuple[str, dict] | None:
+    """Parse '<function=name{json}>' into (name, args). Returns None if unparseable."""
+    match = _FAILED_GEN_RE.search(generation)
+    if not match:
+        return None
+    name, raw_args = match.group(1), match.group(2)
+    try:
+        return name, json.loads(raw_args)
+    except json.JSONDecodeError:
+        return None
+
 # Fixed system instruction sent with every vision call.
 # Registered as a CachedContent at init so Gemini can reuse it across calls
 # without re-processing the tokens each time.
@@ -201,10 +234,13 @@ Use those observations to decide what to do next — adapt if the page looks dif
 
 Rules:
 - Always navigate to a page before trying to click or type on it
-- Use search() to find pages when you do not know the exact URL
-- Use extract_text() when you need to read content from the page
+- Prefer navigating directly to well-known sites (e.g. https://en.wikipedia.org/wiki/<Topic>) instead of going through a search engine
+- To find information, use the search() tool — do NOT navigate to google.com and type into its box (that search box is unreliable to automate). search() opens a clean results page.
+- After search(), use extract_text() to read the results, then navigate() to the most relevant result URL
+- Use extract_text() whenever you need to read content from the page (this is how you collect the requested data)
+- If the goal asks for specific information or content, you MUST call extract_text() on the relevant page to capture it BEFORE calling task_complete() — loading the page is not enough
 - Call task_complete() when the goal is fully achieved OR when you hit an obstacle you cannot overcome
-- Do not repeat the exact same failing action more than twice"""
+- Do not repeat the exact same failing action more than twice — try a different approach instead"""
 
 
 class ExecutorAgent:
@@ -216,9 +252,11 @@ class ExecutorAgent:
         if not groq_key:
             raise ValueError("GROQ_API_KEY environment variable is not set")
 
-        # Gemini Vision — observes each screenshot after an action
+        # Gemini Vision — observes each screenshot after an action.
+        # Note: the gemini-2.0-flash family has zero free-tier quota on current
+        # keys (429 RESOURCE_EXHAUSTED, limit: 0); 2.5-flash is the working free model.
         self.vision_client = genai.Client(api_key=gemini_key)
-        self.vision_model = "gemini-2.0-flash-001"
+        self.vision_model = "gemini-2.5-flash"
 
         # Try to register the fixed system instruction as a CachedContent so
         # Gemini reuses it across calls without re-processing its tokens.
@@ -349,6 +387,66 @@ class ExecutorAgent:
             raise ValueError(f"Unknown tool: {tool_name}")
 
     # ─────────────────────────────────────────────────────────────────────────
+    # Tool selection (with tool_use_failed recovery)
+    # ─────────────────────────────────────────────────────────────────────────
+
+    def _request_tool_call(self, messages: list) -> dict | None:
+        """
+        Ask Groq which tool to call next.
+
+        Groq's Llama models sometimes return a malformed tool call as plain text,
+        which the API rejects with a 400 `tool_use_failed`. When that happens we
+        parse the offending generation out of the error and reconstruct the call
+        ourselves, so a recoverable formatting glitch doesn't fail the whole step.
+
+        Returns a normalized dict {name, args, id, content, arguments}, or None
+        when the model declined to call a tool.
+        """
+        try:
+            response = self.groq.chat.completions.create(
+                model="llama-3.3-70b-versatile",
+                messages=messages,
+                tools=BROWSER_TOOLS,
+                tool_choice="required",   # LLM must call a tool every turn
+                temperature=0.1,
+            )
+        except Exception as e:
+            generation = _extract_failed_generation(e)
+            parsed = _parse_failed_generation(generation) if generation else None
+            if not parsed:
+                raise
+            name, args = parsed
+            return {
+                "name": name,
+                "args": args,
+                "id": f"recovered_{hashlib.md5(generation.encode()).hexdigest()[:8]}",
+                "content": None,
+                "arguments": json.dumps(args),
+            }
+
+        message = response.choices[0].message
+        if not message.tool_calls:
+            return None
+
+        tool_call = message.tool_calls[0]
+        # A no-argument tool (extract_text, scroll, …) may come back as `null`
+        # or empty; normalise anything that isn't an object to {} so callers can
+        # always `.get(...)` safely.
+        try:
+            args = json.loads(tool_call.function.arguments or "{}")
+        except json.JSONDecodeError:
+            args = {}
+        if not isinstance(args, dict):
+            args = {}
+        return {
+            "name": tool_call.function.name,
+            "args": args,
+            "id": tool_call.id,
+            "content": message.content,
+            "arguments": json.dumps(args),
+        }
+
+    # ─────────────────────────────────────────────────────────────────────────
     # Main agentic loop
     # ─────────────────────────────────────────────────────────────────────────
 
@@ -412,37 +510,32 @@ class ExecutorAgent:
 
             try:
                 # ── 1. Ask Groq which tool to call next ──────────────────────
-                response = self.groq.chat.completions.create(
-                    model="llama-3.3-70b-versatile",
-                    messages=messages,
-                    tools=BROWSER_TOOLS,
-                    tool_choice="required",   # LLM must call a tool every turn
-                    temperature=0.1,
-                )
+                call = self._request_tool_call(messages)
 
-                message = response.choices[0].message
-
-                if not message.tool_calls:
+                if call is None:
                     # Shouldn't happen with tool_choice="required", but guard it
                     break
 
-                tool_call = message.tool_calls[0]
-                tool_name = tool_call.function.name
-                tool_args = json.loads(tool_call.function.arguments)
+                tool_name = call["name"]
+                tool_args = call["args"]
+
+                # Assistant turn that records the chosen tool call — reused below
+                # when feeding the observation back into the conversation.
+                assistant_msg = {
+                    "role": "assistant",
+                    "content": call["content"],
+                    "tool_calls": [{
+                        "id": call["id"],
+                        "type": "function",
+                        "function": {"name": tool_name, "arguments": call["arguments"]},
+                    }],
+                }
 
                 # ── 2. Handle task_complete — stop before any browser action ─
                 if tool_name == "task_complete":
                     observation = tool_args.get("summary", "Task completed")
-                    messages.append({
-                        "role": "assistant",
-                        "content": message.content,
-                        "tool_calls": [{
-                            "id": tool_call.id,
-                            "type": "function",
-                            "function": {"name": tool_name, "arguments": tool_call.function.arguments},
-                        }],
-                    })
-                    messages.append({"role": "tool", "content": observation, "tool_call_id": tool_call.id})
+                    messages.append(assistant_msg)
+                    messages.append({"role": "tool", "content": observation, "tool_call_id": call["id"]})
                     break
 
                 # ── 3. Risky action gate — pause and wait for human approval ─
@@ -472,6 +565,12 @@ class ExecutorAgent:
                     success = False
                     error_msg = str(e)
                     tool_result = f"Error: {e}"
+
+                # extract_text returns the page's actual text content — capture it
+                # as extracted data so it reaches the verifier/final report. Vision
+                # data (below) is merged on top rather than replacing it.
+                if tool_name == "extract_text" and success:
+                    extracted_data = {"page_text": tool_result[:4000]}
 
                 # ── 5. Take screenshot ────────────────────────────────────────
                 try:
@@ -503,7 +602,8 @@ class ExecutorAgent:
                     if vision["observation"]:
                         observation = vision["observation"]
                     if vision.get("extracted_data"):
-                        extracted_data = vision["extracted_data"]
+                        # Merge so an extract_text() payload isn't clobbered by vision
+                        extracted_data = {**extracted_data, **vision["extracted_data"]}
                     # Visual failure overrides action success
                     if success and vision.get("step_succeeded_visually") is False:
                         success = False
@@ -512,19 +612,11 @@ class ExecutorAgent:
                     observation = tool_result
 
                 # ── 7. Feed observation back into the conversation ────────────
-                messages.append({
-                    "role": "assistant",
-                    "content": message.content,
-                    "tool_calls": [{
-                        "id": tool_call.id,
-                        "type": "function",
-                        "function": {"name": tool_name, "arguments": tool_call.function.arguments},
-                    }],
-                })
+                messages.append(assistant_msg)
                 messages.append({
                     "role": "tool",
                     "content": observation or tool_result,
-                    "tool_call_id": tool_call.id,
+                    "tool_call_id": call["id"],
                 })
 
             except Exception as e:
