@@ -147,8 +147,13 @@ class BrowserManager:
 
     async def _type_text_impl(self, selector: str, text: str):
         try:
-            await self.page.click(selector)
-            await self.page.fill(selector, text)
+            # First try direct fill (works when click is blocked by overlays).
+            # If that fails, fall back to click + fill.
+            try:
+                await self.page.fill(selector, text)
+            except Exception:
+                await self.page.click(selector)
+                await self.page.fill(selector, text)
         except Exception as e:
             raise Exception(f"Failed to type into '{selector}': {e}")
 

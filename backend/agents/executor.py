@@ -184,7 +184,7 @@ BROWSER_TOOLS = [
     },
 ]
 
-RISKY_ACTIONS = ["submit", "delete", "purchase", "confirm", "send"]
+RISKY_ACTIONS = ["delete", "purchase", "confirm", "send"]
 
 # Groq's Llama models occasionally emit a tool call as a raw text blob instead of
 # a structured tool_calls object, e.g.:
@@ -497,6 +497,10 @@ class ExecutorAgent:
         ]
 
         MAX_STEPS = 15
+        # Trim message history to avoid exceeding Groq's token limit on long tasks.
+        # Keep system message + user goal, then only recent steps to fit budget.
+        # After every step, trim to last ~6-8 exchanges if we approach the limit.
+        HISTORY_WINDOW = 8
 
         for step_num in range(1, MAX_STEPS + 1):
             actual_step = step_num + step_offset
@@ -618,6 +622,12 @@ class ExecutorAgent:
                     "content": observation or tool_result,
                     "tool_call_id": call["id"],
                 })
+
+                # Trim message history to avoid Groq token limit on long tasks.
+                # Keep system + user goal, then only recent steps (HISTORY_WINDOW exchanges).
+                if len(messages) > 2 + HISTORY_WINDOW * 2:
+                    # messages[0] = system, messages[1] = user goal, rest = exchanges
+                    messages = messages[:2] + messages[-(HISTORY_WINDOW * 2):]
 
             except Exception as e:
                 success = False
