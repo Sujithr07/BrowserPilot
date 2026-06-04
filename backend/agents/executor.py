@@ -3,11 +3,9 @@ import re
 import json
 import hashlib
 from collections import OrderedDict
-import PIL.Image
-from google import genai
-from groq import Groq
 
 from backend.browser import BrowserManager
+from backend.llm import reasoning_completion, vision_completion
 from backend.schemas import TaskPlan, StepResult
 
 
@@ -219,8 +217,6 @@ def _parse_failed_generation(generation: str) -> tuple[str, dict] | None:
         return None
 
 # Fixed system instruction sent with every vision call.
-# Registered as a CachedContent at init so Gemini can reuse it across calls
-# without re-processing the tokens each time.
 VISION_SYSTEM = """You are a web automation validator. Analyze this screenshot and answer:
 1. Did the step succeed? (true/false)
 2. What do you see on the page? (description)
@@ -245,42 +241,10 @@ Rules:
 
 class ExecutorAgent:
     def __init__(self):
-        gemini_key = os.getenv("GEMINI_API_KEY")
-        if not gemini_key:
-            raise ValueError("GEMINI_API_KEY environment variable is not set")
-        groq_key = os.getenv("GROQ_API_KEY")
-        if not groq_key:
-            raise ValueError("GROQ_API_KEY environment variable is not set")
-
-        # Gemini Vision — observes each screenshot after an action.
-        # Note: the gemini-2.0-flash family has zero free-tier quota on current
-        # keys (429 RESOURCE_EXHAUSTED, limit: 0); 2.5-flash is the working free model.
-        self.vision_client = genai.Client(api_key=gemini_key)
-        self.vision_model = "gemini-2.5-flash"
-
-        # Try to register the fixed system instruction as a CachedContent so
-        # Gemini reuses it across calls without re-processing its tokens.
-        # Falls back to None when the API rejects the cache (e.g. minimum-token
-        # requirement not met), in which case we send system_instruction inline.
-        self._vision_cache_name: str | None = self._create_vision_cache()
-
-        # Groq — drives the agentic tool-calling loop
-        self.groq = Groq(api_key=groq_key)
-
+        # Both the reasoning loop and vision now go through the provider-agnostic
+        # LiteLLM layer (backend/llm.py), which handles model selection, API keys,
+        # and automatic fallback across free-tier providers on quota/429 errors.
         self.browser = BrowserManager()
-
-    def _create_vision_cache(self) -> str | None:
-        try:
-            cache = self.vision_client.caches.create(
-                model=self.vision_model,
-                config=genai.types.CreateCachedContentConfig(
-                    system_instruction=VISION_SYSTEM,
-                    ttl="300s",
-                ),
-            )
-            return cache.name
-        except Exception:
-            return None
 
     # ─────────────────────────────────────────────────────────────────────────
     # Vision observation
@@ -292,46 +256,28 @@ class ExecutorAgent:
         context keys: tool, target, instruction, expected_outcome
         Returns a fallback dict on any error so the pipeline never crashes.
 
-        Two caching layers:
-        1. Client-side LRU (identical screenshots skip the API entirely).
-        2. Server-side CachedContent: VISION_SYSTEM is registered once and
-           reused by name so Gemini never re-processes those tokens.
-           Falls back to inline system_instruction when the cache is unavailable.
+        Caching: a client-side LRU (identical screenshots skip the API entirely)
+        sits in front of the call. The VLM call itself goes through the LiteLLM
+        vision chain, which fails over to the next provider on a quota/429 error.
         """
         cached = _observation_cache.get(screenshot_path, context)
         if cached is not None:
             return cached
 
+        # Variable part — only the step-specific context changes per call.
+        step_prompt = (
+            f"Step context:\n"
+            f"- Tool used: {context.get('tool', '')}\n"
+            f"- Target: {context.get('target', '')}\n"
+            f"- Instruction: {context.get('instruction', '')}\n"
+            f"- Expected outcome: {context.get('expected_outcome', 'Action completes successfully')}\n\n"
+            f"Analyze the screenshot above and respond with ONLY valid JSON, no markdown."
+        )
+
+        raw_text = ""
         try:
-            image = PIL.Image.open(screenshot_path)
-
-            # Variable part — only the step-specific context changes per call.
-            step_prompt = (
-                f"Step context:\n"
-                f"- Tool used: {context.get('tool', '')}\n"
-                f"- Target: {context.get('target', '')}\n"
-                f"- Instruction: {context.get('instruction', '')}\n"
-                f"- Expected outcome: {context.get('expected_outcome', 'Action completes successfully')}\n\n"
-                f"Analyze the screenshot above and respond with ONLY valid JSON, no markdown."
-            )
-
-            # Build config: prefer the registered CachedContent, fall back to
-            # passing VISION_SYSTEM inline as system_instruction.
-            if self._vision_cache_name:
-                config = genai.types.GenerateContentConfig(
-                    cached_content=self._vision_cache_name,
-                )
-            else:
-                config = genai.types.GenerateContentConfig(
-                    system_instruction=VISION_SYSTEM,
-                )
-
-            response = self.vision_client.models.generate_content(
-                model=self.vision_model,
-                contents=[image, step_prompt],
-                config=config,
-            )
-            text = response.text.strip()
+            raw_text = vision_completion(screenshot_path, VISION_SYSTEM, step_prompt)
+            text = raw_text.strip()
 
             # Strip markdown code fences if the model wrapped the JSON
             if text.startswith("```"):
@@ -341,7 +287,7 @@ class ExecutorAgent:
             raw = json.loads(text)
 
             # Normalise to the internal schema used by the rest of the pipeline.
-            # The new VISION_SYSTEM uses {"success", "observation", "extracted_data"};
+            # VISION_SYSTEM uses {"success", "observation", "extracted_data"};
             # map "success" → "step_succeeded_visually" for backward compatibility.
             result = {
                 "observation": raw.get("observation", ""),
@@ -353,8 +299,8 @@ class ExecutorAgent:
             return result
 
         except json.JSONDecodeError:
-            raw_text = response.text.strip()[:400] if "response" in dir() else "Page state observed"
-            return {"observation": raw_text, "step_succeeded_visually": None, "extracted_data": {}, "issue": None}
+            observation = raw_text.strip()[:400] or "Page state observed"
+            return {"observation": observation, "step_succeeded_visually": None, "extracted_data": {}, "issue": None}
         except Exception as e:
             return {"observation": "", "step_succeeded_visually": None, "extracted_data": {}, "issue": f"Vision unavailable: {e}"}
 
@@ -403,8 +349,7 @@ class ExecutorAgent:
         when the model declined to call a tool.
         """
         try:
-            response = self.groq.chat.completions.create(
-                model="llama-3.3-70b-versatile",
+            response = reasoning_completion(
                 messages=messages,
                 tools=BROWSER_TOOLS,
                 tool_choice="required",   # LLM must call a tool every turn

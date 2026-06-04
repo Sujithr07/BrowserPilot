@@ -1,12 +1,9 @@
 fastapi
 uvicorn
 websockets
-crewai
 playwright
 pydantic
-groq
-google-genai
-pillow
+litellm
 python-dotenv
 sqlalchemy
 aiosqlite

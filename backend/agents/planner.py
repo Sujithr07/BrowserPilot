@@ -1,9 +1,5 @@
-import os
-from dotenv import load_dotenv
-from groq import Groq
+from backend.llm import reasoning_completion
 from backend.schemas import TaskPlan, StepResult
-
-load_dotenv()
 
 _PLAN_SYSTEM = """You are a web task planner. Given a user goal, decompose it into a sequence of browser steps. Each step must use one of these tools:
     navigate (go to URL), click (click element), type_text (type into field),
@@ -34,9 +30,7 @@ def _parse_plan(json_str: str) -> TaskPlan:
 
 
 async def plan_task(goal: str) -> TaskPlan:
-    client = Groq(api_key=os.getenv("GROQ_API_KEY"))
-    response = client.chat.completions.create(
-        model="llama-3.3-70b-versatile",
+    response = reasoning_completion(
         messages=[
             {"role": "system", "content": _PLAN_SYSTEM},
             {"role": "user", "content": goal},
@@ -52,8 +46,6 @@ async def replan_task(
     failed_results: list[StepResult],
 ) -> TaskPlan:
     """Generate a recovery plan focused only on what failed, given what already succeeded."""
-    client = Groq(api_key=os.getenv("GROQ_API_KEY"))
-
     success_ctx = "\n".join(
         f"  Step {r.step_number}: {r.observation}" for r in successful_results
     ) or "  (none)"
@@ -72,8 +64,7 @@ async def replan_task(
         f"Try alternative approaches for what failed (different URLs, selectors, or strategies)."
     )
 
-    response = client.chat.completions.create(
-        model="llama-3.3-70b-versatile",
+    response = reasoning_completion(
         messages=[
             {"role": "system", "content": _PLAN_SYSTEM},
             {"role": "user", "content": user_content},
