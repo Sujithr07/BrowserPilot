@@ -56,6 +56,9 @@ class BrowserManager:
         # loop can't spawn subprocesses (Windows + SelectorEventLoop), else None
         # and we run Playwright directly on the caller's loop.
         self._loop_thread: _ProactorLoopThread | None = None
+        # Latest Set-of-Marks mapping {mark_id(str): {selector, tag, text, bbox}},
+        # refreshed by annotate(). Used to resolve click_mark/type_mark -> element.
+        self._marks: dict[str, dict] = {}
 
     async def _dispatch(self, coro):
         """Run a Playwright coroutine on the right loop (private Proactor thread or current)."""
@@ -184,3 +187,109 @@ class BrowserManager:
         # <textarea>, so typing/clicking there times out — DDG avoids both issues.
         encoded = query.replace(" ", "+")
         await self.navigate(f"https://duckduckgo.com/html/?q={encoded}")
+
+    # ── Set-of-Marks (SoM) grounding ─────────────────────────────────────────
+    # Instead of asking the model to invent a CSS selector blind, we tag every
+    # interactable element with a number, draw that number on the page, screenshot
+    # it, then let the model pick a number. annotate() does the inject→shoot→clean
+    # cycle; click_mark()/type_mark() resolve a number back to its element.
+
+    # JS run in the page: tag interactable elements with data-som-mark, draw a
+    # numbered box over each visible one, and return {id: {selector,tag,text,bbox}}.
+    # The data-som-mark attributes are left in place (they back the selectors);
+    # only the visual overlay container is removed afterwards by _DESELECT_JS.
+    _ANNOTATE_JS = r"""
+    () => {
+      const SEL = 'a, button, input, textarea, select, [role=button], [onclick]';
+      // Remove any stale overlay/attributes from a previous annotate() pass.
+      const old = document.getElementById('__som_overlay__');
+      if (old) old.remove();
+      document.querySelectorAll('[data-som-mark]').forEach(
+        e => e.removeAttribute('data-som-mark'));
+
+      const box = document.createElement('div');
+      box.id = '__som_overlay__';
+      box.style.cssText =
+        'position:fixed;left:0;top:0;z-index:2147483647;pointer-events:none;';
+      document.body.appendChild(box);
+
+      const marks = {};
+      let id = 0;
+      for (const el of document.querySelectorAll(SEL)) {
+        const r = el.getBoundingClientRect();
+        // Skip zero-size, off-screen, or hidden elements — not clickable.
+        if (r.width < 4 || r.height < 4) continue;
+        if (r.bottom < 0 || r.right < 0 ||
+            r.top > innerHeight || r.left > innerWidth) continue;
+        const cs = getComputedStyle(el);
+        if (cs.visibility === 'hidden' || cs.display === 'none' ||
+            cs.opacity === '0') continue;
+
+        el.setAttribute('data-som-mark', id);
+        const rect = document.createElement('div');
+        rect.style.cssText =
+          `position:fixed;left:${r.left}px;top:${r.top}px;width:${r.width}px;` +
+          `height:${r.height}px;border:2px solid #FF0080;box-sizing:border-box;`;
+        const tag = document.createElement('div');
+        tag.textContent = id;
+        tag.style.cssText =
+          `position:fixed;left:${r.left}px;top:${Math.max(0, r.top - 15)}px;` +
+          'background:#FF0080;color:#fff;font:bold 12px monospace;padding:0 3px;';
+        box.appendChild(rect);
+        box.appendChild(tag);
+
+        marks[id] = {
+          selector: `[data-som-mark="${id}"]`,
+          tag: el.tagName.toLowerCase(),
+          text: (el.innerText || el.value || el.getAttribute('aria-label') ||
+                 el.getAttribute('placeholder') || '').trim().slice(0, 80),
+          bbox: [Math.round(r.left), Math.round(r.top),
+                 Math.round(r.width), Math.round(r.height)],
+        };
+        id++;
+      }
+      return marks;
+    }
+    """
+
+    _DESELECT_JS = (
+        "() => { const o = document.getElementById('__som_overlay__');"
+        " if (o) o.remove(); }"
+    )
+
+    async def annotate(self, path: str) -> dict:
+        """
+        Draw a numbered Set-of-Marks overlay, screenshot it to `path`, then strip
+        the overlay. Returns (and caches on self._marks) the mark mapping
+        {mark_id: {selector, tag, text, bbox}} for click_mark/type_mark to resolve.
+        """
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        # One dispatch keeps inject→shoot→clean atomic on the Proactor loop.
+        marks = await self._dispatch(self._annotate_impl(path))
+        self._marks = marks
+        return marks
+
+    async def _annotate_impl(self, path: str) -> dict:
+        marks = await self.page.evaluate(self._ANNOTATE_JS)
+        try:
+            await self.page.screenshot(path=path)
+        finally:
+            # Always remove the overlay, even if the screenshot failed, so the
+            # boxes never leak into a later real interaction.
+            await self.page.evaluate(self._DESELECT_JS)
+        return marks
+
+    def _selector_for_mark(self, mark_id) -> str:
+        """Resolve a mark number to its CSS selector, or raise a helpful error."""
+        mark = self._marks.get(str(mark_id))
+        if not mark:
+            raise Exception(
+                f"Unknown mark id {mark_id} — re-observe the page before using it"
+            )
+        return mark["selector"]
+
+    async def click_mark(self, mark_id):
+        await self.click(self._selector_for_mark(mark_id))
+
+    async def type_mark(self, mark_id, text: str):
+        await self.type_text(self._selector_for_mark(mark_id), text)

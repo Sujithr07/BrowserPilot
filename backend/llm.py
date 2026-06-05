@@ -53,7 +53,7 @@ REASONING_MODELS = _chain(
     [
         "groq/llama-3.3-70b-versatile",
         "github/gpt-4o-mini",
-        "openrouter/deepseek/deepseek-chat",
+        "cerebras/gpt-oss-120b",
     ],
 )
 

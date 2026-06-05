@@ -55,6 +55,12 @@ class _ObservationCache:
 
 _observation_cache = _ObservationCache(maxsize=64)
 
+# Set-of-Marks grounding toggle. When on, each step annotates the page with
+# numbered boxes and exposes click_mark/type_mark so the model picks a NUMBER
+# instead of inventing a CSS selector. Default on; set SOM_ENABLED=0 to A/B test
+# against the legacy selector-only behaviour.
+SOM_ENABLED = os.getenv("SOM_ENABLED", "1").lower() in ("1", "true", "yes", "on")
+
 # ─────────────────────────────────────────────────────────────────────────────
 # Formal JSON-schema tool definitions for Groq function calling.
 # The LLM selects from these on every step based on what it observes on screen.
@@ -182,6 +188,72 @@ BROWSER_TOOLS = [
     },
 ]
 
+# Set-of-Marks tools. Appended to BROWSER_TOOLS only when SOM_ENABLED, so the
+# model is offered numbered clicking exactly when the overlay/mark list exists.
+# The legacy click/type_text selector tools stay available as a fallback.
+SOM_TOOLS = [
+    {
+        "type": "function",
+        "function": {
+            "name": "click_mark",
+            "description": (
+                "Click an element by its Set-of-Marks number. Prefer this over "
+                "click: the number is the label drawn on the element in the latest "
+                "screenshot and listed under 'Interactable elements'."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "mark_id": {
+                        "type": "integer",
+                        "description": "The number label of the element to click",
+                    }
+                },
+                "required": ["mark_id"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "type_mark",
+            "description": (
+                "Type text into an element by its Set-of-Marks number. Prefer this "
+                "over type_text — pick the number of the input/textarea."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "mark_id": {
+                        "type": "integer",
+                        "description": "The number label of the input to type into",
+                    },
+                    "text": {"type": "string", "description": "The text to type"},
+                },
+                "required": ["mark_id", "text"],
+            },
+        },
+    },
+]
+
+if SOM_ENABLED:
+    BROWSER_TOOLS = BROWSER_TOOLS + SOM_TOOLS
+
+
+def _format_marks(marks: dict) -> str:
+    """Render the mark mapping as a compact numbered list for the LLM prompt."""
+    if not marks:
+        return "Interactable elements: none detected on screen."
+    lines = [
+        f"[{mid}] <{m['tag']}> {m['text']}".rstrip()
+        for mid, m in sorted(marks.items(), key=lambda kv: int(kv[0]))
+    ]
+    return (
+        "Interactable elements (call click_mark/type_mark with the number):\n"
+        + "\n".join(lines)
+    )
+
+
 RISKY_ACTIONS = ["delete", "purchase", "confirm", "send"]
 
 # Groq's Llama models occasionally emit a tool call as a raw text blob instead of
@@ -238,6 +310,20 @@ Rules:
 - Call task_complete() when the goal is fully achieved OR when you hit an obstacle you cannot overcome
 - Do not repeat the exact same failing action more than twice — try a different approach instead"""
 
+# Extra clause only added when Set-of-Marks is on: steer the model to the
+# number-based tools instead of guessing CSS selectors.
+SOM_SYSTEM_CLAUSE = """
+
+Set-of-Marks grounding is ENABLED. After each action the screenshot is annotated
+with numbered boxes over every clickable element, and the observation lists them
+as "[number] <tag> text". To interact, prefer click_mark(mark_id) and
+type_mark(mark_id, text) using those NUMBERS — do not invent CSS selectors.
+Only fall back to click(selector)/type_text(selector) if the element you need has
+no number. Mark numbers are only valid for the most recent observation."""
+
+if SOM_ENABLED:
+    SYSTEM_PROMPT = SYSTEM_PROMPT + SOM_SYSTEM_CLAUSE
+
 
 class ExecutorAgent:
     def __init__(self):
@@ -265,13 +351,17 @@ class ExecutorAgent:
             return cached
 
         # Variable part — only the step-specific context changes per call.
+        # When SoM is on, the screenshot carries numbered boxes; passing the same
+        # mark list helps the VLM tie its description to those numbers.
+        marks_block = context.get("marks", "")
         step_prompt = (
             f"Step context:\n"
             f"- Tool used: {context.get('tool', '')}\n"
             f"- Target: {context.get('target', '')}\n"
             f"- Instruction: {context.get('instruction', '')}\n"
-            f"- Expected outcome: {context.get('expected_outcome', 'Action completes successfully')}\n\n"
-            f"Analyze the screenshot above and respond with ONLY valid JSON, no markdown."
+            f"- Expected outcome: {context.get('expected_outcome', 'Action completes successfully')}\n"
+            + (f"\nThe screenshot is annotated with numbered boxes:\n{marks_block}\n" if marks_block else "")
+            + "\nAnalyze the screenshot above and respond with ONLY valid JSON, no markdown."
         )
 
         raw_text = ""
@@ -319,6 +409,12 @@ class ExecutorAgent:
         elif tool_name == "type_text":
             await self.browser.type_text(args["selector"], args["text"])
             return f"Typed '{args['text']}' into {args['selector']}"
+        elif tool_name == "click_mark":
+            await self.browser.click_mark(args["mark_id"])
+            return f"Clicked mark [{args['mark_id']}]"
+        elif tool_name == "type_mark":
+            await self.browser.type_mark(args["mark_id"], args["text"])
+            return f"Typed '{args['text']}' into mark [{args['mark_id']}]"
         elif tool_name == "extract_text":
             return await self.browser.extract_text()
         elif tool_name == "search":
@@ -521,9 +617,15 @@ class ExecutorAgent:
                 if tool_name == "extract_text" and success:
                     extracted_data = {"page_text": tool_result[:4000]}
 
-                # ── 5. Take screenshot ────────────────────────────────────────
+                # ── 5. Take screenshot (annotated with SoM marks if enabled) ──
+                # annotate() draws numbered boxes, screenshots, then strips them,
+                # returning {mark_id: {...}} for the next turn's click_mark/type_mark.
+                marks = {}
                 try:
-                    await self.browser.take_screenshot(screenshot_path)
+                    if SOM_ENABLED:
+                        marks = await self.browser.annotate(screenshot_path)
+                    else:
+                        await self.browser.take_screenshot(screenshot_path)
                 except Exception as e:
                     screenshot_path = None
                     if not error_msg:
@@ -536,7 +638,7 @@ class ExecutorAgent:
                         tool_args.get("url")
                         or tool_args.get("selector")
                         or tool_args.get("query")
-                        or ""
+                        or (f"mark {tool_args['mark_id']}" if "mark_id" in tool_args else "")
                     )
                     vision = await self._observe_page(
                         screenshot_path,
@@ -545,6 +647,9 @@ class ExecutorAgent:
                             "target": target,
                             "instruction": f"{tool_name}({json.dumps(tool_args)})",
                             "expected_outcome": "Action completes and page updates",
+                            # Included so the cache key changes with the mark set and
+                            # the VLM is told which numbers are on screen.
+                            "marks": _format_marks(marks) if SOM_ENABLED else "",
                         },
                     )
 
@@ -561,10 +666,15 @@ class ExecutorAgent:
                     observation = tool_result
 
                 # ── 7. Feed observation back into the conversation ────────────
+                # Append the SoM mark list so the NEXT reasoning_completion call
+                # sees which numbers are available and can pick one.
+                tool_content = observation or tool_result
+                if SOM_ENABLED and marks:
+                    tool_content = f"{tool_content}\n\n{_format_marks(marks)}"
                 messages.append(assistant_msg)
                 messages.append({
                     "role": "tool",
-                    "content": observation or tool_result,
+                    "content": tool_content,
                     "tool_call_id": call["id"],
                 })
 
