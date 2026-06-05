@@ -21,11 +21,14 @@ Both chains are overridable at runtime with a comma-separated env var:
     VISION_MODELS="gemini/gemini-2.5-flash,github/gpt-4o-mini"
 """
 import os
+import time
 import base64
 import logging
 
 import litellm
 from dotenv import load_dotenv
+
+from backend import metrics
 
 load_dotenv()
 
@@ -100,7 +103,15 @@ def reasoning_completion(
     if fallbacks:
         kwargs["fallbacks"] = fallbacks
 
-    response = litellm.completion(**kwargs)
+    # Time around the call; record usage/cost/provider AFTER it returns. This is
+    # purely observational — it does not touch kwargs, tools, or the fallback set.
+    _t0 = time.perf_counter()
+    try:
+        response = litellm.completion(**kwargs)
+    except Exception:
+        metrics.record_error("reasoning")
+        raise
+    metrics.record_call("reasoning", response, time.perf_counter() - _t0)
     logger.debug("reasoning served by %s", getattr(response, "model", "?"))
     return response
 
@@ -144,6 +155,12 @@ def vision_completion(
     if fallbacks:
         kwargs["fallbacks"] = fallbacks
 
-    response = litellm.completion(**kwargs)
+    _t0 = time.perf_counter()
+    try:
+        response = litellm.completion(**kwargs)
+    except Exception:
+        metrics.record_error("vision")
+        raise
+    metrics.record_call("vision", response, time.perf_counter() - _t0)
     logger.debug("vision served by %s", getattr(response, "model", "?"))
     return response.choices[0].message.content or ""

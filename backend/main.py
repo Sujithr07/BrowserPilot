@@ -3,6 +3,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from backend.crew import AgentFlowCrew
 from backend.db import init_db, get_task
 from backend.agents.executor import _observation_cache
+from backend import metrics
 import asyncio
 import json
 import uuid
@@ -132,12 +133,35 @@ async def replay_task(task_id: str):
 @app.get("/health")
 async def health():
     total = _observation_cache.hits + _observation_cache.misses
+    g = metrics.global_summary()
     return {
         "status": "ok",
+        "metrics_enabled": metrics.METRICS_ENABLED,
         "vision_cache": {
             "lru_hits": _observation_cache.hits,
             "lru_misses": _observation_cache.misses,
             "lru_size": len(_observation_cache._store),
             "lru_hit_rate": round(_observation_cache.hits / total, 3) if total else 0.0,
         },
+        # Headline cost/usage so a liveness probe doubles as a spend check.
+        "totals": {"cost_usd": g["cost_usd"], "total_tokens": g["total_tokens"]},
     }
+
+
+@app.get("/metrics")
+async def get_metrics(task_id: str | None = None):
+    """
+    Aggregated observability metrics. Without a query param, returns the global
+    process-wide aggregate; with ?task_id=<id>, returns that task's summary.
+    Combines LLM token/cost/latency with the _ObservationCache (LRU) counters.
+    """
+    total = _observation_cache.hits + _observation_cache.misses
+    cache = {
+        "lru_hits": _observation_cache.hits,
+        "lru_misses": _observation_cache.misses,
+        "lru_size": len(_observation_cache._store),
+        "lru_hit_rate": round(_observation_cache.hits / total, 3) if total else 0.0,
+    }
+    if task_id:
+        return {"task_id": task_id, "metrics": metrics.task_summary(task_id), "vision_cache": cache}
+    return {"global": metrics.global_summary(), "vision_cache": cache}

@@ -7,6 +7,7 @@ from collections import OrderedDict
 from backend.browser import BrowserManager
 from backend.llm import reasoning_completion, vision_completion
 from backend.schemas import TaskPlan, StepResult
+from backend import metrics
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -348,6 +349,8 @@ class ExecutorAgent:
         """
         cached = _observation_cache.get(screenshot_path, context)
         if cached is not None:
+            # A cache hit is a vision API call we avoided — record the saving.
+            metrics.record_cache_hit("vision")
             return cached
 
         # Variable part — only the step-specific context changes per call.

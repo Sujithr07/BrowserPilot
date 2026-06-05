@@ -1,8 +1,9 @@
 from backend.agents.planner import plan_task, replan_task
 from backend.agents.executor import ExecutorAgent
 from backend.agents.verifier import VerifierAgent
-from backend.schemas import TaskReport
+from backend.schemas import TaskReport, TaskMetrics
 from backend.db import save_task
+from backend import metrics
 
 
 class PlannerAgent:
@@ -30,39 +31,53 @@ class AgentFlowCrew:
             if progress_callback is not None:
                 await progress_callback(event_type, data)
 
-        # Step 1: Plan
-        plan = await self.planner.plan(goal)
-        await emit("planned", plan.model_dump())
+        # Bind every LLM call made during this task to task_id so backend.metrics
+        # attributes tokens/cost/latency correctly. No-op when metrics disabled.
+        _metrics_token = metrics.set_task(task_id)
+        try:
+            # Step 1: Plan
+            plan = await self.planner.plan(goal)
+            await emit("planned", plan.model_dump())
 
-        # Step 2: Execute
-        results = await self.executor.execute_plan(plan, approval_callback=approval_callback)
-        for result in results:
-            await emit("step_done", result.model_dump())
-
-        # Step 3: Re-plan once if the last step failed (task ended on a failure,
-        # not on task_complete which always leaves the last step as success)
-        failed = [r for r in results if not r.success]
-        if failed and not results[-1].success:
-            successful = [r for r in results if r.success]
-            recovery_plan = await self.planner.replan(goal, successful, failed)
-            await emit("replanned", recovery_plan.model_dump())
-
-            recovery_results = await self.executor.execute_plan(
-                recovery_plan,
-                approval_callback=approval_callback,
-                step_offset=len(results),
-            )
-            for result in recovery_results:
+            # Step 2: Execute
+            results = await self.executor.execute_plan(plan, approval_callback=approval_callback)
+            for result in results:
                 await emit("step_done", result.model_dump())
 
-            # Merge: keep successful originals + all recovery results
-            results = successful + recovery_results
+            # Step 3: Re-plan once if the last step failed (task ended on a failure,
+            # not on task_complete which always leaves the last step as success)
+            failed = [r for r in results if not r.success]
+            if failed and not results[-1].success:
+                successful = [r for r in results if r.success]
+                recovery_plan = await self.planner.replan(goal, successful, failed)
+                await emit("replanned", recovery_plan.model_dump())
 
-        # Step 4: Verify
-        report = await self.verifier.verify_and_report(goal, plan, results)
-        report.task_id = task_id
+                recovery_results = await self.executor.execute_plan(
+                    recovery_plan,
+                    approval_callback=approval_callback,
+                    step_offset=len(results),
+                )
+                for result in recovery_results:
+                    await emit("step_done", result.model_dump())
 
-        # Step 5: Save
-        await save_task(report)
+                # Merge: keep successful originals + all recovery results
+                results = successful + recovery_results
 
-        return report
+            # Step 4: Verify
+            report = await self.verifier.verify_and_report(goal, plan, results)
+            report.task_id = task_id
+
+            # Step 5: Attach metrics + emit a per-task summary for the frontend
+            # ("cost: $0.00x, vision cache hit-rate: NN%, served by: <provider>").
+            summary = metrics.task_summary(task_id)
+            report.metrics = TaskMetrics(**{
+                k: v for k, v in summary.items() if k in TaskMetrics.model_fields
+            })
+            await emit("metrics", summary)
+
+            # Step 6: Save (full report, including metrics, persisted by db.py)
+            await save_task(report)
+
+            return report
+        finally:
+            metrics.reset_task(_metrics_token)

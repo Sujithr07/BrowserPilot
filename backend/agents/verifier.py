@@ -1,9 +1,11 @@
 import os
 import json
+import time
 import uuid
 from datetime import datetime
 from groq import Groq
 from backend.schemas import TaskPlan, StepResult, TaskReport, TaskTool
+from backend import metrics
 
 
 class VerifierAgent:
@@ -55,6 +57,9 @@ Extracted data: {json.dumps(combined_data, indent=2)}
 
 Was the goal achieved? Write a concise final answer summarising what was accomplished and any key data extracted. If the goal was not achieved, explain what failed. Be specific and helpful."""
         
+        # NOTE: the verifier still talks to Groq directly (not the LiteLLM layer),
+        # so we record its usage here to keep per-task cost complete. Observe-only.
+        _t0 = time.perf_counter()
         response = self.client.chat.completions.create(
             model="llama-3.3-70b-versatile",
             messages=[
@@ -62,7 +67,8 @@ Was the goal achieved? Write a concise final answer summarising what was accompl
             ],
             temperature=0.3
         )
-        
+        metrics.record_call("reasoning", response, time.perf_counter() - _t0)
+
         final_answer = response.choices[0].message.content
         
         # Determine status

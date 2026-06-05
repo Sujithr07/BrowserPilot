@@ -45,6 +45,25 @@ class StepResult(BaseModel):
     model_config = {"json_schema_extra": {"examples": [{"step_number": 1, "success": True, "observation": "Page loaded with search bar visible", "extracted_data": {}, "screenshot_path": None, "error": None}]}}
 
 
+class TaskMetrics(BaseModel):
+    """Observability metrics for a task: token usage, USD cost, latency, and the
+    vision-cache effectiveness. Populated from backend.metrics; all-zero when the
+    METRICS_ENABLED flag is off."""
+    input_tokens: int = Field(0, description="Prompt tokens summed across all LLM calls")
+    output_tokens: int = Field(0, description="Completion tokens summed across all LLM calls")
+    total_tokens: int = Field(0, description="Total tokens (input + output)")
+    cost_usd: float = Field(0.0, description="Total USD cost from litellm.completion_cost")
+    reasoning_calls: int = Field(0, description="Number of reasoning/tool-calling LLM calls")
+    vision_calls: int = Field(0, description="Vision API calls actually made (cache misses)")
+    vision_cache_hits: int = Field(0, description="Vision observations served from _ObservationCache")
+    vision_cache_hit_rate: float = Field(0.0, description="hits / (hits + vision_calls)")
+    vision_cost_saved_usd: float = Field(0.0, description="Estimated USD saved by cache hits")
+    llm_latency_s: float = Field(0.0, description="Summed wall-clock latency of all LLM calls")
+    avg_latency_s: float = Field(0.0, description="Average latency per LLM call")
+    served_by: dict[str, int] = Field(default_factory=dict, description="provider/model -> call count")
+    primary_provider: str = Field("", description="The model that served the most calls")
+
+
 class TaskReport(BaseModel):
     """Comprehensive report of a completed task execution including plan, results, and final answer."""
     task_id: str = Field(..., description="Unique identifier for the task")
@@ -56,5 +75,6 @@ class TaskReport(BaseModel):
     total_steps: int = Field(..., description="Total number of steps attempted")
     successful_steps: int = Field(..., description="Number of steps that succeeded")
     created_at: str = Field(..., description="ISO timestamp when the task was created")
+    metrics: TaskMetrics = Field(default_factory=TaskMetrics, description="Token/cost/latency/cache metrics for this task")
 
-    model_config = {"json_schema_extra": {"examples": [{"task_id": "task-123", "goal": "Find product price", "status": "completed", "plan": {"goal": "Find product price", "steps": [], "estimated_steps": 3}, "step_results": [], "final_answer": "The product costs $29.99", "total_steps": 3, "successful_steps": 3, "created_at": "2024-01-01T00:00:00Z"}]}}
+    model_config = {"json_schema_extra": {"examples": [{"task_id": "task-123", "goal": "Find product price", "status": "completed", "plan": {"goal": "Find product price", "steps": [], "estimated_steps": 3}, "step_results": [], "final_answer": "The product costs $29.99", "total_steps": 3, "successful_steps": 3, "created_at": "2024-01-01T00:00:00Z", "metrics": {}}]}}
