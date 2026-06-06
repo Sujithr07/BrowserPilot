@@ -327,11 +327,17 @@ if SOM_ENABLED:
 
 
 class ExecutorAgent:
-    def __init__(self):
+    def __init__(self, browser=None):
         # Both the reasoning loop and vision now go through the provider-agnostic
         # LiteLLM layer (backend/llm.py), which handles model selection, API keys,
         # and automatic fallback across free-tier providers on quota/429 errors.
-        self.browser = BrowserManager()
+        #
+        # `browser` lets a caller inject a pooled LeasedBrowser; when None we own a
+        # standalone BrowserManager and manage its start/stop ourselves. A pooled
+        # browser is already started and is reset/returned by the pool, so we must
+        # NOT start or stop it here.
+        self._owns_browser = browser is None
+        self.browser = browser or BrowserManager()
 
     # ─────────────────────────────────────────────────────────────────────────
     # Vision observation
@@ -508,19 +514,21 @@ class ExecutorAgent:
         results = []
         task_id = hashlib.md5(plan.goal.encode()).hexdigest()[:8]
 
-        try:
-            await self.browser.start()
-        except Exception as e:
-            return [
-                StepResult(
-                    step_number=1,
-                    success=False,
-                    observation="",
-                    extracted_data={},
-                    screenshot_path=None,
-                    error=f"Browser failed to start: {e}",
-                )
-            ]
+        # Only start a browser we own; a pooled/injected browser is already running.
+        if self._owns_browser:
+            try:
+                await self.browser.start()
+            except Exception as e:
+                return [
+                    StepResult(
+                        step_number=1,
+                        success=False,
+                        observation="",
+                        extracted_data={},
+                        screenshot_path=None,
+                        error=f"Browser failed to start: {e}",
+                    )
+                ]
 
         # Give the LLM the goal and the planner's suggested steps as loose guidance
         plan_summary = "\n".join(
@@ -706,9 +714,11 @@ class ExecutorAgent:
                 )
             )
 
-        try:
-            await self.browser.stop()
-        except Exception:
-            pass
+        # Only tear down a browser we own; the pool resets and reuses its own.
+        if self._owns_browser:
+            try:
+                await self.browser.stop()
+            except Exception:
+                pass
 
         return results

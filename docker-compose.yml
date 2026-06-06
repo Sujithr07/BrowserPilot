@@ -1,0 +1,48 @@
+# Local-dev stack: Redis (queue + event bus), the API (enqueues + bridges the
+# WebSocket), and the worker (runs AgentFlowCrew on a pre-warmed BrowserPool).
+#
+#   docker compose up --build
+#
+# Provider API keys come from your .env (GROQ_API_KEY, GEMINI_API_KEY, ...).
+# Scale workers with:  docker compose up --scale worker=3
+services:
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+  api:
+    build: .
+    ports:
+      - "8000:8000"
+    env_file: .env
+    environment:
+      USE_QUEUE: "1"
+      REDIS_URL: "redis://redis:6379"
+    depends_on:
+      redis:
+        condition: service_healthy
+    command: uvicorn backend.main:app --host 0.0.0.0 --port 8000
+
+  worker:
+    build: .
+    env_file: .env
+    environment:
+      USE_QUEUE: "1"
+      REDIS_URL: "redis://redis:6379"
+      # Containers have no display -> must run headless.
+      BROWSER_HEADLESS: "1"
+      BROWSER_POOL_SIZE: "2"
+      # WORKER_CONCURRENCY defaults to BROWSER_POOL_SIZE if unset.
+    depends_on:
+      redis:
+        condition: service_healthy
+    # SIGTERM-friendly: arq drains in-flight jobs, then on_shutdown closes the
+    # pooled browsers. Give it time to finish a long task before SIGKILL.
+    stop_grace_period: 60s
+    command: arq backend.worker.WorkerSettings

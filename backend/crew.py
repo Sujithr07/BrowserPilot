@@ -15,9 +15,12 @@ class PlannerAgent:
 
 
 class AgentFlowCrew:
-    def __init__(self):
+    def __init__(self, browser=None):
+        # `browser` (a pooled LeasedBrowser) is injected by the worker so the crew
+        # reuses a pre-warmed context instead of launching its own. When None the
+        # executor falls back to a standalone per-task BrowserManager.
         self.planner = PlannerAgent()
-        self.executor = ExecutorAgent()
+        self.executor = ExecutorAgent(browser=browser)
         self.verifier = VerifierAgent()
 
     async def run_task(

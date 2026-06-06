@@ -1,12 +1,20 @@
+import asyncio
+import json
+import uuid
+import contextlib
+
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
+
+from backend import config
 from backend.crew import AgentFlowCrew
 from backend.db import init_db, get_task
 from backend.agents.executor import _observation_cache
 from backend import metrics
-import asyncio
-import json
-import uuid
+from backend.logging_config import configure_logging, get_logger
+
+configure_logging()
+log = get_logger("agentflow.api")
 
 app = FastAPI(title="AgentFlow")
 
@@ -19,47 +27,83 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Store active tasks and their websocket connections
-active_tasks = {}
-websocket_connections = {}
-# Pending approval futures per task — executor awaits these until frontend responds
+# ── In-process (USE_QUEUE=0) transport state ────────────────────────────────────
+# Used only when the job queue is disabled: the crew runs in this process and
+# streams over these in-memory maps (legacy behavior, no Redis required).
+active_tasks: dict[str, str] = {}
+websocket_connections: dict[str, WebSocket] = {}
 approval_futures: dict[str, asyncio.Future] = {}
 
 
 @app.on_event("startup")
 async def startup():
     await init_db()
+    if config.USE_QUEUE:
+        # Lazy imports so the app still boots without redis/arq installed when
+        # USE_QUEUE=0 (pure in-process dev).
+        from arq import create_pool
+        from arq.connections import RedisSettings
+        from backend.events import EventBus
+
+        app.state.arq = await create_pool(RedisSettings.from_dsn(config.REDIS_URL))
+        app.state.bus = EventBus(config.REDIS_URL)
+        log.info("api.startup", extra={"mode": "queue", "redis": config.REDIS_URL})
+    else:
+        app.state.arq = None
+        app.state.bus = None
+        log.info("api.startup", extra={"mode": "in-process"})
+
+
+@app.on_event("shutdown")
+async def shutdown():
+    """Graceful shutdown: release Redis connections (uvicorn calls this on SIGTERM)."""
+    arq = getattr(app.state, "arq", None)
+    if arq is not None:
+        await arq.aclose()
+    bus = getattr(app.state, "bus", None)
+    if bus is not None:
+        await bus.close()
+    log.info("api.shutdown")
 
 
 @app.post("/run-task")
 async def run_task(body: dict):
     goal = body.get("goal")
     task_id = body.get("task_id") or str(uuid.uuid4())[:8]
-    
+
+    if config.USE_QUEUE:
+        # Enqueue and return immediately; the worker runs the crew. _job_id=task_id
+        # dedupes so the same task can't be double-queued.
+        await app.state.arq.enqueue_job("run_task_job", goal, task_id, _job_id=task_id)
+        log.info("task.enqueued", extra={"task_id": task_id, "goal": goal})
+        return {"task_id": task_id, "status": "queued"}
+
+    # ── Legacy in-process path ──────────────────────────────────────────────
+    await _run_task_in_process(goal, task_id)
+    return {"task_id": task_id, "status": "started"}
+
+
+async def _run_task_in_process(goal: str, task_id: str):
+    """USE_QUEUE=0: run the crew here and stream over the in-memory socket map."""
     crew = AgentFlowCrew()
-    
+
     async def progress_callback(event_type: str, data: dict):
-        if task_id in websocket_connections:
-            ws = websocket_connections[task_id]
-            try:
+        ws = websocket_connections.get(task_id)
+        if ws is not None:
+            with contextlib.suppress(Exception):
                 await ws.send_json({"event": event_type, "data": data})
-            except:
-                pass
 
     async def approval_callback(step_info: dict) -> bool:
-        """Send approval_required event, wait up to 5 min for frontend response."""
-        if task_id not in websocket_connections:
+        ws = websocket_connections.get(task_id)
+        if ws is None:
             return False
-        ws = websocket_connections[task_id]
-        try:
+        with contextlib.suppress(Exception):
             await ws.send_json({"event": "approval_required", "data": step_info})
-        except Exception:
-            return False
         loop = asyncio.get_event_loop()
         future: asyncio.Future = loop.create_future()
         approval_futures[task_id] = future
         try:
-            return await asyncio.wait_for(asyncio.shield(future), timeout=300.0)
+            return await asyncio.wait_for(asyncio.shield(future), timeout=config.APPROVAL_TIMEOUT_S)
         except asyncio.TimeoutError:
             approval_futures.pop(task_id, None)
             return False
@@ -67,55 +111,74 @@ async def run_task(body: dict):
     async def run_background():
         try:
             report = await crew.run_task(goal, task_id, progress_callback, approval_callback)
-            # Send completion event
-            if task_id in websocket_connections:
-                ws = websocket_connections[task_id]
-                try:
+            ws = websocket_connections.get(task_id)
+            if ws is not None:
+                with contextlib.suppress(Exception):
                     await ws.send_json({"event": "completed", "data": report.model_dump()})
-                except:
-                    pass
         except Exception as e:
-            # Send error event
-            if task_id in websocket_connections:
-                ws = websocket_connections[task_id]
-                try:
+            ws = websocket_connections.get(task_id)
+            if ws is not None:
+                with contextlib.suppress(Exception):
                     await ws.send_json({"event": "error", "data": {"message": str(e)}})
-                except:
-                    pass
         finally:
-            # Clean up
-            if task_id in active_tasks:
-                del active_tasks[task_id]
-    
-    # Start background task
+            active_tasks.pop(task_id, None)
+
     asyncio.create_task(run_background())
     active_tasks[task_id] = "running"
-    
-    return {"task_id": task_id, "status": "started"}
 
 
 @app.websocket("/ws/task/{task_id}")
 async def websocket_endpoint(websocket: WebSocket, task_id: str):
     await websocket.accept()
-    websocket_connections[task_id] = websocket
+    if config.USE_QUEUE:
+        await _ws_queue_bridge(websocket, task_id)
+    else:
+        await _ws_in_process(websocket, task_id)
 
+
+async def _ws_queue_bridge(websocket: WebSocket, task_id: str):
+    """Bridge a socket to the worker: Redis events -> WS, WS approvals -> Redis."""
+    bus = app.state.bus
+    async with bus.subscribe_events(task_id) as events:
+
+        async def forward():
+            async for evt in events:
+                with contextlib.suppress(Exception):
+                    await websocket.send_json(evt)
+
+        fwd = asyncio.create_task(forward())
+        try:
+            while True:
+                raw = await websocket.receive_text()
+                with contextlib.suppress(json.JSONDecodeError):
+                    msg = json.loads(raw)
+                    if msg.get("type") == "approval_response":
+                        await bus.send_approval(task_id, bool(msg.get("approved", False)))
+        except WebSocketDisconnect:
+            pass
+        finally:
+            fwd.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await fwd
+
+
+async def _ws_in_process(websocket: WebSocket, task_id: str):
+    """Legacy in-memory socket handling (USE_QUEUE=0)."""
+    websocket_connections[task_id] = websocket
     try:
         while True:
             raw = await websocket.receive_text()
-            try:
+            with contextlib.suppress(json.JSONDecodeError, Exception):
                 msg = json.loads(raw)
                 if msg.get("type") == "approval_response" and task_id in approval_futures:
                     future = approval_futures.pop(task_id)
                     if not future.done():
                         future.set_result(bool(msg.get("approved", False)))
-            except (json.JSONDecodeError, Exception):
-                pass
     except WebSocketDisconnect:
         pass
     finally:
-        if task_id in websocket_connections:
-            del websocket_connections[task_id]
-        # Auto-deny any pending approval when connection closes
+        websocket_connections.pop(task_id, None)
+        # Auto-deny any pending approval when the connection closes.
         if task_id in approval_futures:
             future = approval_futures.pop(task_id)
             if not future.done():
@@ -134,8 +197,11 @@ async def replay_task(task_id: str):
 async def health():
     total = _observation_cache.hits + _observation_cache.misses
     g = metrics.global_summary()
-    return {
+    health_doc = {
         "status": "ok",
+        "mode": "queue" if config.USE_QUEUE else "in-process",
+        "pool_size": config.BROWSER_POOL_SIZE,
+        "worker_concurrency": config.WORKER_CONCURRENCY,
         "metrics_enabled": metrics.METRICS_ENABLED,
         "vision_cache": {
             "lru_hits": _observation_cache.hits,
@@ -146,6 +212,15 @@ async def health():
         # Headline cost/usage so a liveness probe doubles as a spend check.
         "totals": {"cost_usd": g["cost_usd"], "total_tokens": g["total_tokens"]},
     }
+    # In queue mode, surface Redis reachability so the probe reflects the backbone.
+    if config.USE_QUEUE:
+        try:
+            await app.state.arq.ping()
+            health_doc["redis"] = "ok"
+        except Exception as e:
+            health_doc["status"] = "degraded"
+            health_doc["redis"] = f"unreachable: {e}"
+    return health_doc
 
 
 @app.get("/metrics")

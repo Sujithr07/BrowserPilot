@@ -2,13 +2,45 @@ import os
 import sys
 import asyncio
 import threading
-from playwright.async_api import async_playwright
+from playwright.async_api import async_playwright, Error as PlaywrightError
+
+from backend import config
+from backend.logging_config import get_logger
+from backend.resilience import RetryPolicy, CircuitBreaker, call_resilient
+
+log = get_logger("agentflow.browser")
 
 # Realistic Chrome user agent — reduces bot detection on sites like Amazon/Flipkart
 _USER_AGENT = (
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
     "AppleWebKit/537.36 (KHTML, like Gecko) "
     "Chrome/125.0.0.0 Safari/537.36"
+)
+
+_CONTEXT_KWARGS = dict(
+    user_agent=_USER_AGENT,
+    viewport={"width": 1280, "height": 800},
+    locale="en-US",
+)
+# Hide the navigator.webdriver flag that sites check for bot detection.
+_STEALTH_INIT = "Object.defineProperty(navigator, 'webdriver', {get: () => undefined})"
+
+# Resilience for the NETWORK layer only (navigation). The two-tier
+# networkidle->domcontentloaded fallback below is now formalized as a retried,
+# breaker-protected operation. Page actions (click/type) are intentionally NOT
+# retried here: Playwright already waits/auto-retries for an element, and a wrong
+# selector would otherwise burn another full timeout. LLM retries live in llm.py.
+_NAV_POLICY = RetryPolicy(
+    attempts=int(os.getenv("NAV_RETRY_ATTEMPTS", "2")),
+    base_delay=0.8,
+    max_delay=5.0,
+    retry_on=(PlaywrightError, asyncio.TimeoutError),
+)
+# Process-wide: protects a wedged browser/site from being hammered by every task.
+_NAV_BREAKER = CircuitBreaker(
+    "browser.navigate",
+    failure_threshold=int(os.getenv("NAV_BREAKER_THRESHOLD", "8")),
+    reset_timeout=float(os.getenv("NAV_BREAKER_RESET_S", "20")),
 )
 
 
@@ -46,94 +78,54 @@ class _ProactorLoopThread:
         self._thread.join(timeout=5)
 
 
-class BrowserManager:
+def _needs_proactor_thread() -> bool:
+    """True when the running loop can't spawn subprocesses (Windows + Selector)."""
+    if sys.platform != "win32":
+        return False  # SelectorEventLoop supports subprocesses on POSIX
+    try:
+        running = asyncio.get_running_loop()
+    except RuntimeError:
+        return True
+    # ProactorEventLoop already supports subprocesses — no thread needed.
+    return not isinstance(running, asyncio.ProactorEventLoop)
+
+
+class _PageSession:
+    """
+    Page-level browser operations shared by the standalone ``BrowserManager`` and
+    the pooled ``LeasedBrowser``.
+
+    The owner supplies a ``self.page`` (a Playwright Page) and an async
+    ``_dispatch(coro)`` that runs Playwright coroutines on the correct event loop
+    (the private Proactor loop on Windows, else the caller's loop). All the public
+    actions the executor uses live here, so both the per-task and pooled paths
+    behave identically.
+    """
+
     def __init__(self):
-        self.playwright = None
-        self.browser = None
-        self.context = None
         self.page = None
-        # Set lazily in start(): a dedicated Proactor loop thread when the running
-        # loop can't spawn subprocesses (Windows + SelectorEventLoop), else None
-        # and we run Playwright directly on the caller's loop.
-        self._loop_thread: _ProactorLoopThread | None = None
         # Latest Set-of-Marks mapping {mark_id(str): {selector, tag, text, bbox}},
         # refreshed by annotate(). Used to resolve click_mark/type_mark -> element.
         self._marks: dict[str, dict] = {}
 
-    async def _dispatch(self, coro):
-        """Run a Playwright coroutine on the right loop (private Proactor thread or current)."""
-        if self._loop_thread is not None:
-            return await self._loop_thread.run(coro)
-        return await coro
+    async def _dispatch(self, coro):  # pragma: no cover - overridden by owner
+        raise NotImplementedError
 
-    @staticmethod
-    def _needs_proactor_thread() -> bool:
-        if sys.platform != "win32":
-            return False  # SelectorEventLoop supports subprocesses on POSIX
-        try:
-            running = asyncio.get_running_loop()
-        except RuntimeError:
-            return True
-        # ProactorEventLoop already supports subprocesses — no thread needed.
-        return not isinstance(running, asyncio.ProactorEventLoop)
-
-    async def start(self):
-        if self._needs_proactor_thread():
-            self._loop_thread = _ProactorLoopThread()
-        await self._dispatch(self._start_impl())
-
-    async def _start_impl(self):
-        self.playwright = await async_playwright().start()
-        # headless=False: far less detectable than headless=True on major e-commerce sites
-        self.browser = await self.playwright.chromium.launch(
-            headless=False,
-            args=["--disable-blink-features=AutomationControlled"],
-        )
-        self.context = await self.browser.new_context(
-            user_agent=_USER_AGENT,
-            viewport={"width": 1280, "height": 800},
-            locale="en-US",
-        )
-        # Hide the navigator.webdriver flag that sites check for bot detection
-        await self.context.add_init_script(
-            "Object.defineProperty(navigator, 'webdriver', {get: () => undefined})"
-        )
-        self.page = await self.context.new_page()
-
-    async def stop(self):
-        await self._dispatch(self._stop_impl())
-        if self._loop_thread is not None:
-            self._loop_thread.shutdown()
-            self._loop_thread = None
-
-    async def _stop_impl(self):
-        if self.context:
-            await self.context.close()
-        if self.browser:
-            await self.browser.close()
-        if self.playwright:
-            await self.playwright.stop()
-        self.page = None
-        self.context = None
-        self.browser = None
-        self.playwright = None
-
-    async def __aenter__(self):
-        await self.start()
-        return self
-
-    async def __aexit__(self, exc_type, exc_val, exc_tb):
-        await self.stop()
-
+    # ── Navigation (resilient: retry + circuit breaker around the network) ────
     async def navigate(self, url: str):
-        await self._dispatch(self._navigate_impl(url))
+        await call_resilient(
+            lambda: self._dispatch(self._navigate_impl(url)),
+            policy=_NAV_POLICY,
+            breaker=_NAV_BREAKER,
+            name=f"navigate:{url}",
+        )
 
     async def _navigate_impl(self, url: str):
-        # networkidle waits for JS-rendered content (prices, dynamic data) to finish loading
+        # networkidle waits for JS-rendered content (prices, dynamic data) to load.
         try:
             await self.page.goto(url, wait_until="networkidle", timeout=30000)
         except Exception:
-            # Fall back to domcontentloaded if networkidle times out (e.g. live widgets)
+            # Fall back to domcontentloaded if networkidle times out (e.g. live widgets).
             await self.page.goto(url, wait_until="domcontentloaded", timeout=30000)
 
     async def click(self, selector: str):
@@ -193,11 +185,6 @@ class BrowserManager:
     # interactable element with a number, draw that number on the page, screenshot
     # it, then let the model pick a number. annotate() does the inject→shoot→clean
     # cycle; click_mark()/type_mark() resolve a number back to its element.
-
-    # JS run in the page: tag interactable elements with data-som-mark, draw a
-    # numbered box over each visible one, and return {id: {selector,tag,text,bbox}}.
-    # The data-som-mark attributes are left in place (they back the selectors);
-    # only the visual overlay container is removed afterwards by _DESELECT_JS.
     _ANNOTATE_JS = r"""
     () => {
       const SEL = 'a, button, input, textarea, select, [role=button], [onclick]';
@@ -293,3 +280,65 @@ class BrowserManager:
 
     async def type_mark(self, mark_id, text: str):
         await self.type_text(self._selector_for_mark(mark_id), text)
+
+
+class BrowserManager(_PageSession):
+    """
+    Standalone, single-context browser (one per task). Unchanged external API —
+    used by the in-process path (USE_QUEUE=0) and the eval harness. The pooled
+    path uses BrowserPool + LeasedBrowser instead.
+    """
+
+    def __init__(self):
+        super().__init__()
+        self.playwright = None
+        self.browser = None
+        self.context = None
+        # A dedicated Proactor loop thread when the running loop can't spawn
+        # subprocesses (Windows + SelectorEventLoop), else None.
+        self._loop_thread: _ProactorLoopThread | None = None
+
+    async def _dispatch(self, coro):
+        if self._loop_thread is not None:
+            return await self._loop_thread.run(coro)
+        return await coro
+
+    async def start(self):
+        if _needs_proactor_thread():
+            self._loop_thread = _ProactorLoopThread()
+        await self._dispatch(self._start_impl())
+
+    async def _start_impl(self):
+        self.playwright = await async_playwright().start()
+        self.browser = await self.playwright.chromium.launch(
+            headless=config.BROWSER_HEADLESS,
+            args=["--disable-blink-features=AutomationControlled"],
+        )
+        self.context = await self.browser.new_context(**_CONTEXT_KWARGS)
+        await self.context.add_init_script(_STEALTH_INIT)
+        self.page = await self.context.new_page()
+
+    async def stop(self):
+        await self._dispatch(self._stop_impl())
+        if self._loop_thread is not None:
+            self._loop_thread.shutdown()
+            self._loop_thread = None
+
+    async def _stop_impl(self):
+        if self.context:
+            await self.context.close()
+        if self.browser:
+            await self.browser.close()
+        if self.playwright:
+            await self.playwright.stop()
+        self.page = None
+        self.context = None
+        self.browser = None
+        self.playwright = None
+
+    async def __aenter__(self):
+        await self.start()
+        return self
+
+    async def __aexit__(self, exc_type, exc_val, exc_tb):
+        await self.stop()
