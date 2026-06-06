@@ -540,7 +540,9 @@ class ExecutorAgent:
             },
         ]
 
-        MAX_STEPS = 15
+        # Step cap. Defaults to 15; the eval harness lowers/raises it via env so a
+        # task can't loop forever. Read per-call so a runner can set it at startup.
+        MAX_STEPS = int(os.getenv("EXECUTOR_MAX_STEPS", "15"))
         # Trim message history to avoid exceeding Groq's token limit on long tasks.
         # Keep system message + user goal, then only recent steps to fit budget.
         # After every step, trim to last ~6-8 exchanges if we approach the limit.

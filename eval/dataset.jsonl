@@ -1,0 +1,50 @@
+{"id": "wiki_01", "web_name": "Wikipedia", "question": "On Wikipedia, in what year was the Eiffel Tower completed?", "answer_reference": "1889"}
+{"id": "wiki_02", "web_name": "Wikipedia", "question": "Use Wikipedia to find who wrote the novel 'Pride and Prejudice'.", "answer_reference": "Jane Austen"}
+{"id": "wiki_03", "web_name": "Wikipedia", "question": "According to Wikipedia, what is the chemical symbol for gold?", "answer_reference": "Au"}
+{"id": "wiki_04", "web_name": "Wikipedia", "question": "On Wikipedia, in what year did the Apollo 11 mission first land humans on the Moon?", "answer_reference": "1969"}
+{"id": "wiki_05", "web_name": "Wikipedia", "question": "Use Wikipedia to find the capital city of Australia.", "answer_reference": "Canberra"}
+{"id": "wiki_06", "web_name": "Wikipedia", "question": "According to Wikipedia, who developed the theory of general relativity?", "answer_reference": "Albert Einstein"}
+{"id": "wiki_07", "web_name": "Wikipedia", "question": "On Wikipedia, what is the largest planet in the Solar System?", "answer_reference": "Jupiter"}
+{"id": "wiki_08", "web_name": "Wikipedia", "question": "Use Wikipedia to find which element has atomic number 1.", "answer_reference": "Hydrogen"}
+{"id": "wiki_09", "web_name": "Wikipedia", "question": "According to Wikipedia, which river does Wikipedia list as the longest in the world?", "answer_reference": "The Nile"}
+{"id": "wiki_10", "web_name": "Wikipedia", "question": "On Wikipedia, who painted the Mona Lisa?", "answer_reference": "Leonardo da Vinci"}
+{"id": "allrecipes_01", "web_name": "Allrecipes", "question": "On Allrecipes, find a classic banana bread recipe. Roughly how many ripe bananas does it call for?", "answer_reference": "About 3 ripe bananas (2 to 3)"}
+{"id": "allrecipes_02", "web_name": "Allrecipes", "question": "Search Allrecipes for 'chocolate chip cookies'. What oven temperature is typically used to bake them?", "answer_reference": "About 375 degrees F (190 degrees C)"}
+{"id": "allrecipes_03", "web_name": "Allrecipes", "question": "On Allrecipes, find a basic pancake recipe. Does it use baking powder as a leavening agent?", "answer_reference": "Yes, baking powder"}
+{"id": "allrecipes_04", "web_name": "Allrecipes", "question": "Find a guacamole recipe on Allrecipes. Name two common ingredients besides avocado.", "answer_reference": "Lime juice and onion (also tomato, cilantro, salt)"}
+{"id": "allrecipes_05", "web_name": "Allrecipes", "question": "Search Allrecipes for 'beef chili'. Are kidney beans a common ingredient?", "answer_reference": "Yes, kidney beans are common"}
+{"id": "allrecipes_06", "web_name": "Allrecipes", "question": "On Allrecipes, find a classic margarita recipe. What liquor is the base spirit?", "answer_reference": "Tequila"}
+{"id": "allrecipes_07", "web_name": "Allrecipes", "question": "Find a basic pizza dough recipe on Allrecipes. What leavening agent does it use?", "answer_reference": "Yeast (active dry yeast)"}
+{"id": "allrecipes_08", "web_name": "Allrecipes", "question": "Search Allrecipes for 'lemonade'. What are the three core ingredients?", "answer_reference": "Lemons (lemon juice), sugar, and water"}
+{"id": "allrecipes_09", "web_name": "Allrecipes", "question": "On Allrecipes, find a fluffy scrambled eggs recipe. What dairy ingredient is commonly added?", "answer_reference": "Milk (sometimes butter)"}
+{"id": "allrecipes_10", "web_name": "Allrecipes", "question": "Search Allrecipes for 'caesar salad dressing'. Name one umami ingredient it typically includes.", "answer_reference": "Anchovies (or Worcestershire sauce / Parmesan)"}
+{"id": "github_01", "web_name": "GitHub", "question": "Go to the GitHub repository facebook/react. What is its primary programming language?", "answer_reference": "JavaScript"}
+{"id": "github_02", "web_name": "GitHub", "question": "On GitHub, what open-source license does the repository tensorflow/tensorflow use?", "answer_reference": "Apache License 2.0"}
+{"id": "github_03", "web_name": "GitHub", "question": "Find the GitHub repository microsoft/vscode. What is its primary programming language?", "answer_reference": "TypeScript"}
+{"id": "github_04", "web_name": "GitHub", "question": "On GitHub, who is the owner/organization of the repository named 'cpython'?", "answer_reference": "python"}
+{"id": "github_05", "web_name": "GitHub", "question": "Go to torvalds/linux on GitHub. What is the primary programming language of the repository?", "answer_reference": "C"}
+{"id": "github_06", "web_name": "GitHub", "question": "On GitHub, find the repository pallets/flask. In one phrase, what is it?", "answer_reference": "A lightweight Python WSGI web framework (micro-framework)"}
+{"id": "github_07", "web_name": "GitHub", "question": "Find rust-lang/rust on GitHub. Under which licenses is it released?", "answer_reference": "MIT and Apache-2.0 (dual-licensed)"}
+{"id": "github_08", "web_name": "GitHub", "question": "On GitHub, what is the primary programming language of the repository django/django?", "answer_reference": "Python"}
+{"id": "github_09", "web_name": "GitHub", "question": "Go to the GitHub repository kubernetes/kubernetes. What is its primary programming language?", "answer_reference": "Go"}
+{"id": "github_10", "web_name": "GitHub", "question": "On GitHub, find ohmyzsh/ohmyzsh. Which shell is it a configuration framework for?", "answer_reference": "Zsh"}
+{"id": "arxiv_01", "web_name": "arXiv", "question": "On arXiv, find the paper 'Attention Is All You Need'. Who is the first listed author?", "answer_reference": "Ashish Vaswani"}
+{"id": "arxiv_02", "web_name": "arXiv", "question": "Search arXiv for the BERT paper ('BERT: Pre-training of Deep Bidirectional Transformers'). What is its arXiv identifier?", "answer_reference": "1810.04805"}
+{"id": "arxiv_03", "web_name": "arXiv", "question": "On arXiv, the paper 'Attention Is All You Need' introduced which neural network architecture?", "answer_reference": "The Transformer"}
+{"id": "arxiv_04", "web_name": "arXiv", "question": "Find on arXiv the 'Generative Adversarial Nets' paper by Goodfellow et al. In what year was it submitted?", "answer_reference": "2014"}
+{"id": "arxiv_05", "web_name": "arXiv", "question": "Search arXiv for 'Denoising Diffusion Probabilistic Models'. Who is the first author?", "answer_reference": "Jonathan Ho"}
+{"id": "arxiv_06", "web_name": "arXiv", "question": "On arXiv, what is the primary subject category of the paper 'Attention Is All You Need'?", "answer_reference": "cs.CL (Computation and Language)"}
+{"id": "arxiv_07", "web_name": "arXiv", "question": "Find the arXiv paper 'Deep Residual Learning for Image Recognition' (ResNet). Who is the first author?", "answer_reference": "Kaiming He"}
+{"id": "arxiv_08", "web_name": "arXiv", "question": "Search arXiv for the GPT-3 paper 'Language Models are Few-Shot Learners'. What is its arXiv identifier?", "answer_reference": "2005.14165"}
+{"id": "arxiv_09", "web_name": "arXiv", "question": "On arXiv, find 'Adam: A Method for Stochastic Optimization'. Name the two authors.", "answer_reference": "Diederik P. Kingma and Jimmy Ba"}
+{"id": "arxiv_10", "web_name": "arXiv", "question": "Find the arXiv word2vec paper 'Efficient Estimation of Word Representations in Vector Space'. Who is the first author?", "answer_reference": "Tomas Mikolov"}
+{"id": "maps_01", "web_name": "Google Maps", "question": "On Google Maps, what is the approximate driving distance from New York City to Boston?", "answer_reference": "About 215 miles (around 350 km)"}
+{"id": "maps_02", "web_name": "Google Maps", "question": "Use Google Maps to find the country where the Eiffel Tower is located.", "answer_reference": "France"}
+{"id": "maps_03", "web_name": "Google Maps", "question": "On Google Maps, search for the Statue of Liberty. Which U.S. state is it in?", "answer_reference": "New York"}
+{"id": "maps_04", "web_name": "Google Maps", "question": "Find on Google Maps the city where the Colosseum is located.", "answer_reference": "Rome, Italy"}
+{"id": "maps_05", "web_name": "Google Maps", "question": "On Google Maps, roughly how long does it take to drive from Los Angeles to San Francisco?", "answer_reference": "About 6 hours"}
+{"id": "maps_06", "web_name": "Google Maps", "question": "Use Google Maps to find which ocean lies to the east of Sydney, Australia.", "answer_reference": "The Pacific Ocean (Tasman Sea)"}
+{"id": "maps_07", "web_name": "Google Maps", "question": "On Google Maps, search 'Golden Gate Bridge'. Which city is it in?", "answer_reference": "San Francisco"}
+{"id": "maps_08", "web_name": "Google Maps", "question": "Use Google Maps to find a country that Mount Everest borders.", "answer_reference": "Nepal (also China / Tibet)"}
+{"id": "maps_09", "web_name": "Google Maps", "question": "On Google Maps, what is the approximate distance from London to Paris?", "answer_reference": "About 290 miles (around 460 km)"}
+{"id": "maps_10", "web_name": "Google Maps", "question": "Use Google Maps to find the major city nearest to the Great Pyramid of Giza.", "answer_reference": "Cairo, Egypt"}

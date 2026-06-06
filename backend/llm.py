@@ -83,14 +83,19 @@ def reasoning_completion(
     tools: list[dict] | None = None,
     tool_choice: str | None = None,
     temperature: float = 0.2,
+    models: list[str] | None = None,
 ):
     """
     Text / tool-calling completion with automatic provider fallback.
 
     Returns the raw LiteLLM response (OpenAI-shaped): use
     response.choices[0].message.content / .tool_calls just like the OpenAI SDK.
+
+    `models` overrides the chain for this one call (primary + fallbacks) without
+    touching the global REASONING_MODELS — e.g. the eval judge runs on its own
+    JUDGE_MODELS chain. Defaults to REASONING_MODELS when omitted.
     """
-    primary, fallbacks = _split(REASONING_MODELS)
+    primary, fallbacks = _split(models or REASONING_MODELS)
     kwargs: dict = {
         "model": primary,
         "messages": messages,

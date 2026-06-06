@@ -1,0 +1,55 @@
+name: eval
+
+# Two jobs:
+#   * harness-selftest — runs on every PR. Mock mode: no API keys, no browser,
+#     no network. Verifies the eval wiring (dataset parse, concurrency, judge
+#     plumbing, report rendering) stays green.
+#   * smoke — the real 3-task subset against live providers + a real browser.
+#     Manual only (needs secrets + is slow/flaky), headful under xvfb.
+on:
+  pull_request:
+  workflow_dispatch:
+  schedule:
+    - cron: "0 6 * * 1"   # weekly Monday 06:00 UTC
+
+jobs:
+  harness-selftest:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - run: pip install -r requirements.txt
+      - name: Harness self-test (mock — no keys, no browser)
+        run: python -m eval.runner --mock --report
+      - uses: actions/upload-artifact@v4
+        with:
+          name: eval-selftest-report
+          path: eval/results/REPORT.md
+
+  smoke:
+    # Live web automation + real LLM calls: opt-in only.
+    if: ${{ github.event_name == 'workflow_dispatch' }}
+    runs-on: ubuntu-latest
+    env:
+      GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
+      GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+      # GitHub Actions forbids secret names starting with GITHUB_, so map it here.
+      GITHUB_API_KEY: ${{ secrets.GH_MODELS_TOKEN }}
+      OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
+      CEREBRAS_API_KEY: ${{ secrets.CEREBRAS_API_KEY }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - run: pip install -r requirements.txt
+      - run: python -m playwright install --with-deps chromium
+      - name: 3-task smoke (headful via xvfb)
+        run: xvfb-run -a python -m eval.runner --smoke --concurrency 1 --timeout 240 --report
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: eval-smoke-report
+          path: eval/results/REPORT.md

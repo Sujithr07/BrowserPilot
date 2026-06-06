@@ -7,3 +7,4 @@ litellm
 python-dotenv
 sqlalchemy
 aiosqlite
+tqdm
