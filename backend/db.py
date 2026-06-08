@@ -74,6 +74,19 @@ async def save_task(report: TaskReport):
         await session.commit()
 
 
+async def list_tasks(limit: int = 50) -> list[dict]:
+    async with async_session() as session:
+        result = await session.execute(
+            select(Task.id, Task.goal, Task.status, Task.created_at)
+            .order_by(Task.created_at.desc())
+            .limit(limit)
+        )
+        return [
+            {"task_id": r.id, "goal": r.goal, "status": r.status, "created_at": r.created_at}
+            for r in result.fetchall()
+        ]
+
+
 async def get_task(task_id: str) -> dict | None:
     async with async_session() as session:
         result = await session.execute(select(Task).where(Task.id == task_id))

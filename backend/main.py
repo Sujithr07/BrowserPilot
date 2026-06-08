@@ -1,14 +1,16 @@
 import asyncio
 import json
+import os
 import uuid
 import contextlib
 
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.staticfiles import StaticFiles
 
 from backend import config
 from backend.crew import AgentFlowCrew
-from backend.db import init_db, get_task
+from backend.db import init_db, get_task, list_tasks
 from backend.agents.executor import _observation_cache
 from backend import metrics
 from backend.logging_config import configure_logging, get_logger
@@ -26,6 +28,10 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+# Serve screenshots directory so the frontend can display captured page images.
+os.makedirs("screenshots", exist_ok=True)
+app.mount("/screenshots", StaticFiles(directory="screenshots"), name="screenshots")
 
 # ── In-process (USE_QUEUE=0) transport state ────────────────────────────────────
 # Used only when the job queue is disabled: the crew runs in this process and
@@ -183,6 +189,11 @@ async def _ws_in_process(websocket: WebSocket, task_id: str):
             future = approval_futures.pop(task_id)
             if not future.done():
                 future.set_result(False)
+
+
+@app.get("/tasks")
+async def get_tasks(limit: int = 50):
+    return await list_tasks(limit=limit)
 
 
 @app.get("/replay/{task_id}")
