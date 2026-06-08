@@ -121,12 +121,18 @@ class _PageSession:
         )
 
     async def _navigate_impl(self, url: str):
-        # networkidle waits for JS-rendered content (prices, dynamic data) to load.
+        # domcontentloaded is fast and reliable. We deliberately do NOT navigate
+        # with wait_until="networkidle": ad/analytics-heavy commerce sites
+        # (Amazon, Flipkart) rarely go network-idle, so that would burn the full
+        # 30s timeout and then force a SECOND full load via a fallback — ~30s+
+        # wasted per navigation. Instead we land on domcontentloaded, then give
+        # dynamic content (prices, lazy widgets) a short, capped settle window
+        # that we never block on.
+        await self.page.goto(url, wait_until="domcontentloaded", timeout=30000)
         try:
-            await self.page.goto(url, wait_until="networkidle", timeout=30000)
+            await self.page.wait_for_load_state("networkidle", timeout=3000)
         except Exception:
-            # Fall back to domcontentloaded if networkidle times out (e.g. live widgets).
-            await self.page.goto(url, wait_until="domcontentloaded", timeout=30000)
+            pass
 
     async def click(self, selector: str):
         await self._dispatch(self._click_impl(selector))
@@ -229,11 +235,25 @@ class _PageSession:
         box.appendChild(rect);
         box.appendChild(tag);
 
+        // Coarse on-screen region. Lets the model tell main-content results from
+        // the top navigation/category bar and the footer chrome it keeps
+        // misclicking (e.g. "Mac Desktops", "Bestsellers"). bbox is viewport-
+        // relative, so these bands track what's actually visible.
+        let region = 'main';
+        if (r.top < innerHeight * 0.12) region = 'header';
+        else if (r.top > innerHeight * 0.85) region = 'footer';
+
+        // href disambiguates a product/result link (e.g. ".../dp/B0...") from a
+        // category/nav link — the single biggest signal for picking the right one.
+        const href = (el.getAttribute('href') || '').trim().slice(0, 80);
+
         marks[id] = {
           selector: `[data-som-mark="${id}"]`,
           tag: el.tagName.toLowerCase(),
           text: (el.innerText || el.value || el.getAttribute('aria-label') ||
                  el.getAttribute('placeholder') || '').trim().slice(0, 80),
+          href: href,
+          region: region,
           bbox: [Math.round(r.left), Math.round(r.top),
                  Math.round(r.width), Math.round(r.height)],
         };
@@ -263,18 +283,31 @@ class _PageSession:
     async def _annotate_impl(self, path: str) -> dict:
         # A preceding click can leave the page mid-navigation, where the new
         # document has no <body> yet and the overlay injection would throw
-        # "Cannot read properties of null (reading 'appendChild')". Wait for the
-        # DOM to settle (and for <body> to exist) before annotating; both waits
-        # are best-effort so a quiet page or already-loaded state never blocks.
-        try:
-            await self.page.wait_for_load_state("domcontentloaded", timeout=10000)
-        except Exception:
-            pass
-        try:
-            await self.page.wait_for_selector("body", timeout=5000)
-        except Exception:
-            pass
-        marks = await self.page.evaluate(self._ANNOTATE_JS)
+        # "Cannot read properties of null (reading 'appendChild')". page.click()
+        # does NOT wait for a click-triggered navigation, so wait_for_load_state
+        # may return on the OLD document and the body can still go null. We:
+        #   1. wait for the DOM to settle (and for <body> to exist), and
+        #   2. retry briefly when the injection comes back empty — the usual sign
+        #      we caught the page before the navigation committed.
+        # All waits are best-effort so a quiet/already-loaded page never blocks.
+        marks = {}
+        for attempt in range(3):
+            try:
+                await self.page.wait_for_load_state("domcontentloaded", timeout=10000)
+            except Exception:
+                pass
+            try:
+                await self.page.wait_for_selector("body", timeout=5000)
+            except Exception:
+                pass
+            marks = await self.page.evaluate(self._ANNOTATE_JS)
+            if marks or attempt == 2:
+                break
+            # Empty marks likely mean a navigation is in flight — let it land.
+            try:
+                await self.page.wait_for_timeout(500)
+            except Exception:
+                pass
         try:
             await self.page.screenshot(path=path)
         finally:

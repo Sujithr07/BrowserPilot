@@ -65,6 +65,12 @@ _observation_cache = _ObservationCache(maxsize=64)
 # against the legacy selector-only behaviour.
 SOM_ENABLED = os.getenv("SOM_ENABLED", "1").lower() in ("1", "true", "yes", "on")
 
+# Tools whose outcome is already fully known from their text result, so a vision
+# pass adds 3-5s of VLM latency with no new information. extract_text returns the
+# page text, search/scroll just reposition. Clicks, typing, and navigation still
+# get a visual check — that's where a wrong mark or a failed action shows up.
+SKIP_VISION_TOOLS = {"extract_text", "search", "scroll"}
+
 # ─────────────────────────────────────────────────────────────────────────────
 # Formal JSON-schema tool definitions for Groq function calling.
 # The LLM selects from these on every step based on what it observes on screen.
@@ -245,13 +251,23 @@ if SOM_ENABLED:
 
 
 def _format_marks(marks: dict) -> str:
-    """Render the mark mapping as a compact numbered list for the LLM prompt."""
+    """Render the mark mapping as a compact numbered list for the LLM prompt.
+
+    Includes a region tag (header/footer) and the href so the model can tell a
+    main-content result/product link from navigation, category, and footer chrome.
+    """
     if not marks:
         return "Interactable elements: none detected on screen."
-    lines = [
-        f"[{mid}] <{m['tag']}> {m['text']}".rstrip()
-        for mid, m in sorted(marks.items(), key=lambda kv: int(kv[0]))
-    ]
+    lines = []
+    for mid, m in sorted(marks.items(), key=lambda kv: int(kv[0])):
+        label = f"[{mid}] <{m['tag']}> {m['text']}".rstrip()
+        region = m.get("region")
+        if region and region != "main":
+            label += f" (in page {region})"
+        href = m.get("href")
+        if href:
+            label += f" -> {href}"
+        lines.append(label)
     return (
         "Interactable elements (call click_mark/type_mark with the number):\n"
         + "\n".join(lines)
@@ -320,10 +336,25 @@ SOM_SYSTEM_CLAUSE = """
 
 Set-of-Marks grounding is ENABLED. After each action the screenshot is annotated
 with numbered boxes over every clickable element, and the observation lists them
-as "[number] <tag> text". To interact, prefer click_mark(mark_id) and
-type_mark(mark_id, text) using those NUMBERS — do not invent CSS selectors.
-Only fall back to click(selector)/type_text(selector) if the element you need has
-no number. Mark numbers are only valid for the most recent observation."""
+as "[number] <tag> text (in page region) -> href". To interact, prefer
+click_mark(mark_id) and type_mark(mark_id, text) using those NUMBERS — do not
+invent CSS selectors. Only fall back to click(selector)/type_text(selector) if the
+element you need has no number. Mark numbers are only valid for the most recent
+observation.
+
+Choosing the right mark:
+- Read each element's text and href and pick the one that matches your CURRENT
+  sub-goal. Never pick a number just because it exists.
+- To click a search result or product, choose a MAIN-content element. Avoid marks
+  tagged "(in page header)" or "(in page footer)" — those are the navigation and
+  category bars (e.g. "Mac Desktops", "Bestsellers"), sign-in, cart, and site
+  chrome, not results. On shopping sites a product link's href usually contains
+  the product path (e.g. "/dp/", "/p/", "/itm").
+- Ignore "Sponsored"/ad listings unless the goal explicitly asks for them.
+- Do NOT re-click or re-type into a field you have already filled. After typing a
+  query into a search box, submit it by clicking the search/submit button or a
+  matching suggestion — never click the same search box again. If search results
+  are already visible, click the result/product link directly."""
 
 if SOM_ENABLED:
     SYSTEM_PROMPT = SYSTEM_PROMPT + SOM_SYSTEM_CLAUSE
@@ -652,7 +683,14 @@ class ExecutorAgent:
                     log.warning("annotate/screenshot failed at step %s: %s", actual_step, e)
 
                 # ── 6. Vision observation — primary source of truth ───────────
-                if screenshot_path and os.path.exists(screenshot_path):
+                # Skip the VLM for tools whose result is already textual (saves a
+                # 3-5s round-trip). We still annotate above so the next step has a
+                # fresh mark list; we just don't pay for a visual check here.
+                if (
+                    screenshot_path
+                    and os.path.exists(screenshot_path)
+                    and tool_name not in SKIP_VISION_TOOLS
+                ):
                     target = (
                         tool_args.get("url")
                         or tool_args.get("selector")
