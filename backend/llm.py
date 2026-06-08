@@ -137,6 +137,11 @@ def vision_completion(
     with open(image_path, "rb") as f:
         b64 = base64.b64encode(f.read()).decode()
 
+    # Match the data-URL MIME to the actual file so providers that trust the
+    # declared type don't mis-decode (screenshots are JPEG by default now).
+    ext = os.path.splitext(image_path)[1].lower()
+    mime = "image/jpeg" if ext in (".jpg", ".jpeg") else "image/png"
+
     messages = [
         {"role": "system", "content": system_prompt},
         {
@@ -145,7 +150,7 @@ def vision_completion(
                 {"type": "text", "text": user_prompt},
                 {
                     "type": "image_url",
-                    "image_url": {"url": f"data:image/png;base64,{b64}"},
+                    "image_url": {"url": f"data:{mime};base64,{b64}"},
                 },
             ],
         },

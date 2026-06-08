@@ -25,6 +25,14 @@ _CONTEXT_KWARGS = dict(
 # Hide the navigator.webdriver flag that sites check for bot detection.
 _STEALTH_INIT = "Object.defineProperty(navigator, 'webdriver', {get: () => undefined})"
 
+# Screenshots exist to feed the vision model. JPEG is far smaller than PNG, which
+# cuts base64 size, upload time, and VLM inference latency on every step; q80
+# keeps the Set-of-Marks numbers legible. Override via env to A/B test or revert.
+SHOT_TYPE = os.getenv("SCREENSHOT_TYPE", "jpeg").lower()
+SHOT_QUALITY = int(os.getenv("SCREENSHOT_QUALITY", "80"))
+# File extension callers should use so Playwright + the vision MIME type agree.
+SHOT_EXT = "jpg" if SHOT_TYPE == "jpeg" else "png"
+
 # Resilience for the NETWORK layer only (navigation). The two-tier
 # networkidle->domcontentloaded fallback below is now formalized as a retried,
 # breaker-protected operation. Page actions (click/type) are intentionally NOT
@@ -176,8 +184,15 @@ class _PageSession:
         await self._dispatch(self._screenshot_impl(path))
         return path
 
+    async def _shoot(self, path: str):
+        """Capture the viewport, as JPEG (smaller → faster vision) unless overridden."""
+        if SHOT_TYPE == "jpeg":
+            await self.page.screenshot(path=path, type="jpeg", quality=SHOT_QUALITY)
+        else:
+            await self.page.screenshot(path=path)
+
     async def _screenshot_impl(self, path: str):
-        await self.page.screenshot(path=path)
+        await self._shoot(path)
 
     async def search(self, query: str):
         # DuckDuckGo's HTML endpoint returns a clean, automation-friendly results
@@ -309,7 +324,7 @@ class _PageSession:
             except Exception:
                 pass
         try:
-            await self.page.screenshot(path=path)
+            await self._shoot(path)
         finally:
             # Always remove the overlay, even if the screenshot failed, so the
             # boxes never leak into a later real interaction.

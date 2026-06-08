@@ -47,3 +47,12 @@ APPROVAL_TIMEOUT_S = float(os.getenv("APPROVAL_TIMEOUT_S", "300"))
 
 # Hard ceiling arq gives a single job before killing it (browser tasks are long).
 JOB_TIMEOUT_S = _int("JOB_TIMEOUT_S", 600)
+
+# Parallel branch execution. When on, the planner tries to split a goal into
+# INDEPENDENT branches (e.g. "compare X on site A and site B") and runs them
+# concurrently — each on its own browser — then merges the results. Goals that
+# don't decompose run as a single branch (i.e. exactly the old sequential path).
+PARALLEL_ENABLED = _bool("PARALLEL_ENABLED", True)
+# Upper bound on concurrent branches per task, to cap browser/CPU fan-out. Branch
+# 0 reuses the task's primary browser; extra branches launch standalone browsers.
+MAX_PARALLEL_BRANCHES = _int("MAX_PARALLEL_BRANCHES", 3)

@@ -4,7 +4,7 @@ import json
 import hashlib
 from collections import OrderedDict
 
-from backend.browser import BrowserManager
+from backend.browser import BrowserManager, SHOT_EXT
 from backend.llm import reasoning_completion, vision_completion
 from backend.schemas import TaskPlan, StepResult
 from backend import metrics
@@ -592,7 +592,7 @@ class ExecutorAgent:
 
         for step_num in range(1, MAX_STEPS + 1):
             actual_step = step_num + step_offset
-            screenshot_path = f"screenshots/{task_id}_{actual_step}.png"
+            screenshot_path = f"screenshots/{task_id}_{actual_step}.{SHOT_EXT}"
             success = True
             error_msg = None
             observation = ""

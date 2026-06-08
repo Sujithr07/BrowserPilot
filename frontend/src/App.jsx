@@ -2,6 +2,31 @@ import { useState, useRef } from 'react'
 
 const API_URL = 'http://localhost:8000'
 
+// Parallel branches execute with strided step numbers (branch i -> i*1000 + n)
+// and carry a 1-based `branch` tag. Derive a readable label, falling back to
+// inferring the branch from the number for older saved reports without the tag.
+const BRANCH_STRIDE = 1000
+function stepLabel(step) {
+  const n = step.step_number
+  const branch = step.branch ?? (n >= BRANCH_STRIDE ? Math.floor(n / BRANCH_STRIDE) + 1 : null)
+  const local = n >= BRANCH_STRIDE ? n % BRANCH_STRIDE : n
+  return { branch, local }
+}
+
+function BranchBadge({ n }) {
+  if (!n) return null
+  return (
+    <span
+      style={{
+        background: '#6366f1', color: '#fff', borderRadius: 4,
+        padding: '0 6px', fontSize: '0.72em', fontWeight: 600, marginRight: 6,
+      }}
+    >
+      Branch {n}
+    </span>
+  )
+}
+
 function App() {
   const [view, setView] = useState('run') // 'run' or 'replay'
   const [goal, setGoal] = useState('')
@@ -181,7 +206,8 @@ function App() {
 
                   <div className="step-box">
                     <div>
-                      <b>Step {replayData.step_results[currentStep].step_number}</b>{' '}
+                      <BranchBadge n={stepLabel(replayData.step_results[currentStep]).branch} />
+                      <b>Step {stepLabel(replayData.step_results[currentStep]).local}</b>{' '}
                       <span className={replayData.step_results[currentStep].success ? 'text-blue' : 'text-red'}>
                         {replayData.step_results[currentStep].success ? 'Success' : 'Failed'}
                       </span>
@@ -249,12 +275,14 @@ function LogRow({ event }) {
   }
 
   if (type === 'step_done') {
+    const { branch, local } = stepLabel(data)
     return (
       <div className="log-row">
         <span className={`dot ${data.success ? 'dot-green' : 'dot-red'}`}></span>
         <div>
           <div>
-            Step {data.step_number}: {data.observation || (data.success ? 'done' : 'no observation')} — {data.success ? 'success' : 'failed'}
+            <BranchBadge n={branch} />
+            Step {local}: {data.observation || (data.success ? 'done' : 'no observation')} — {data.success ? 'success' : 'failed'}
           </div>
           {!data.success && data.error && (
             <div className="sub text-red">{data.error}</div>

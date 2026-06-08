@@ -33,6 +33,16 @@ class TaskPlan(BaseModel):
     model_config = {"json_schema_extra": {"examples": [{"goal": "Find the price of a product", "steps": [], "estimated_steps": 3}]}}
 
 
+class TaskDecomposition(BaseModel):
+    """A goal split into independent branches that can run concurrently in
+    separate browser sessions. ``parallel`` is True only when the branches do not
+    depend on each other's results; a single-branch decomposition is sequential."""
+    parallel: bool = Field(False, description="True when branches are independent and safe to run at the same time")
+    branches: list[TaskPlan] = Field(default_factory=list, description="Self-contained sub-plans, one per parallel track")
+
+    model_config = {"json_schema_extra": {"examples": [{"parallel": True, "branches": []}]}}
+
+
 class StepResult(BaseModel):
     """Captures the result of executing a single task step including observations and any extracted data."""
     step_number: int = Field(..., description="Sequential number of this step")
@@ -41,6 +51,7 @@ class StepResult(BaseModel):
     extracted_data: dict = Field(default_factory=dict, description="Any data extracted from the page")
     screenshot_path: str | None = Field(None, description="Path to saved screenshot of the page")
     error: str | None = Field(None, description="Error message if the step failed")
+    branch: int | None = Field(None, description="1-based branch index when the task ran in parallel; None for a single-branch task")
 
     model_config = {"json_schema_extra": {"examples": [{"step_number": 1, "success": True, "observation": "Page loaded with search bar visible", "extracted_data": {}, "screenshot_path": None, "error": None}]}}
 
