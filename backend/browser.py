@@ -187,6 +187,10 @@ class _PageSession:
     # cycle; click_mark()/type_mark() resolve a number back to its element.
     _ANNOTATE_JS = r"""
     () => {
+      // A click may have just triggered a navigation; if the new document hasn't
+      // parsed its <body> yet, bail with no marks instead of throwing on
+      // appendChild. annotate() waits for the DOM first, this is the backstop.
+      if (!document.body) return {};
       const SEL = 'a, button, input, textarea, select, [role=button], [onclick]';
       // Remove any stale overlay/attributes from a previous annotate() pass.
       const old = document.getElementById('__som_overlay__');
@@ -257,6 +261,19 @@ class _PageSession:
         return marks
 
     async def _annotate_impl(self, path: str) -> dict:
+        # A preceding click can leave the page mid-navigation, where the new
+        # document has no <body> yet and the overlay injection would throw
+        # "Cannot read properties of null (reading 'appendChild')". Wait for the
+        # DOM to settle (and for <body> to exist) before annotating; both waits
+        # are best-effort so a quiet page or already-loaded state never blocks.
+        try:
+            await self.page.wait_for_load_state("domcontentloaded", timeout=10000)
+        except Exception:
+            pass
+        try:
+            await self.page.wait_for_selector("body", timeout=5000)
+        except Exception:
+            pass
         marks = await self.page.evaluate(self._ANNOTATE_JS)
         try:
             await self.page.screenshot(path=path)

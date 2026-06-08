@@ -8,6 +8,9 @@ from backend.browser import BrowserManager
 from backend.llm import reasoning_completion, vision_completion
 from backend.schemas import TaskPlan, StepResult
 from backend import metrics
+from backend.logging_config import get_logger
+
+log = get_logger("agentflow.executor")
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -640,10 +643,13 @@ class ExecutorAgent:
                     else:
                         await self.browser.take_screenshot(screenshot_path)
                 except Exception as e:
+                    # The browser action already ran above; losing the post-action
+                    # screenshot only costs us the vision observation. Degrade
+                    # gracefully (observation falls back to the tool result) instead
+                    # of flipping a successful action to failed. Only surface the
+                    # screenshot error when the action itself hadn't already failed.
                     screenshot_path = None
-                    if not error_msg:
-                        error_msg = f"Screenshot failed: {e}"
-                        success = False
+                    log.warning("annotate/screenshot failed at step %s: %s", actual_step, e)
 
                 # ── 6. Vision observation — primary source of truth ───────────
                 if screenshot_path and os.path.exists(screenshot_path):
