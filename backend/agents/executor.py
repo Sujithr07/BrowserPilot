@@ -71,6 +71,16 @@ SOM_ENABLED = os.getenv("SOM_ENABLED", "1").lower() in ("1", "true", "yes", "on"
 # get a visual check — that's where a wrong mark or a failed action shows up.
 SKIP_VISION_TOOLS = {"extract_text", "search", "scroll"}
 
+# Conversation-history token controls. extract_text can return thousands of chars
+# and the Set-of-Marks list is large; resending both every step used to burn the
+# daily token quota in a single task. We keep the MOST RECENT tool turn rich (the
+# model needs to read it now) but shrink older turns and drop their stale mark
+# lists (only the latest screenshot's marks are valid). All env-tunable.
+MAX_TOOL_CONTENT = int(os.getenv("MAX_TOOL_CONTENT_CHARS", "4000"))  # latest turn text cap
+OLD_TOOL_CONTENT = int(os.getenv("OLD_TOOL_CONTENT_CHARS", "400"))   # superseded turns
+# Marker that prefixes the appended marks list, so old ones can be stripped.
+_MARKS_SEP = "\n\nInteractable elements"
+
 # ─────────────────────────────────────────────────────────────────────────────
 # Formal JSON-schema tool definitions for Groq function calling.
 # The LLM selects from these on every step based on what it observes on screen.
@@ -328,7 +338,9 @@ Rules:
 - Use extract_text() whenever you need to read content from the page (this is how you collect the requested data)
 - If the goal asks for specific information or content, you MUST call extract_text() on the relevant page to capture it BEFORE calling task_complete() — loading the page is not enough
 - Call task_complete() when the goal is fully achieved OR when you hit an obstacle you cannot overcome
-- Do not repeat the exact same failing action more than twice — try a different approach instead"""
+- Do not repeat the exact same failing action more than twice — try a different approach instead
+- To read or compare prices/specs/info, extract_text() on the results or product page is ENOUGH. Do NOT click "Add to Compare", "Add to cart", wishlist, or similar UI — those don't help gather data and waste steps.
+- If an observation says the page did not change after a click, do NOT click that element again — capture what you need with extract_text() and move on (or call task_complete())."""
 
 # Extra clause only added when Set-of-Marks is on: steer the model to the
 # number-based tools instead of guessing CSS selectors.
@@ -585,10 +597,10 @@ class ExecutorAgent:
         # Step cap. Defaults to 15; the eval harness lowers/raises it via env so a
         # task can't loop forever. Read per-call so a runner can set it at startup.
         MAX_STEPS = int(os.getenv("EXECUTOR_MAX_STEPS", "15"))
-        # Trim message history to avoid exceeding Groq's token limit on long tasks.
-        # Keep system message + user goal, then only recent steps to fit budget.
-        # After every step, trim to last ~6-8 exchanges if we approach the limit.
-        HISTORY_WINDOW = 8
+        # Trim message history to avoid exceeding the token budget on long tasks.
+        # Keep system message + user goal, then only recent exchanges. Combined
+        # with the per-turn content caps above, this keeps daily token use sane.
+        HISTORY_WINDOW = int(os.getenv("HISTORY_WINDOW", "6"))
 
         for step_num in range(1, MAX_STEPS + 1):
             actual_step = step_num + step_offset
@@ -723,10 +735,14 @@ class ExecutorAgent:
                     observation = tool_result
 
                 # ── 7. Feed observation back into the conversation ────────────
-                # Append the SoM mark list so the NEXT reasoning_completion call
-                # sees which numbers are available and can pick one.
-                tool_content = observation or tool_result
+                # The text part is capped (extract_text can be huge); the SoM mark
+                # list is appended after it so the NEXT call can pick a number.
+                text_part = observation or tool_result
+                if len(text_part) > MAX_TOOL_CONTENT:
+                    text_part = text_part[:MAX_TOOL_CONTENT] + " …[truncated]"
+                tool_content = text_part
                 if SOM_ENABLED and marks:
+                    # Separator must start with _MARKS_SEP so old lists are strippable.
                     tool_content = f"{tool_content}\n\n{_format_marks(marks)}"
                 messages.append(assistant_msg)
                 messages.append({
@@ -735,8 +751,21 @@ class ExecutorAgent:
                     "tool_call_id": call["id"],
                 })
 
-                # Trim message history to avoid Groq token limit on long tasks.
-                # Keep system + user goal, then only recent steps (HISTORY_WINDOW exchanges).
+                # Compact superseded turns: only the latest screenshot's marks are
+                # valid, and old observations are just loose context — so strip the
+                # stale mark lists and shrink old tool turns. This is the main token
+                # saver (keeps a long task from exhausting the daily quota).
+                for m in messages[:-1]:
+                    if m.get("role") == "tool" and isinstance(m.get("content"), str):
+                        c = m["content"]
+                        cut = c.find(_MARKS_SEP)
+                        if cut != -1:
+                            c = c[:cut]
+                        if len(c) > OLD_TOOL_CONTENT:
+                            c = c[:OLD_TOOL_CONTENT] + " …[truncated]"
+                        m["content"] = c
+
+                # Drop the oldest exchanges entirely once we exceed the window.
                 if len(messages) > 2 + HISTORY_WINDOW * 2:
                     # messages[0] = system, messages[1] = user goal, rest = exchanges
                     messages = messages[:2] + messages[-(HISTORY_WINDOW * 2):]

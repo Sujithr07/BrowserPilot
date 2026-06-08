@@ -50,13 +50,23 @@ def _chain(env_var: str, default: list[str]) -> list[str]:
 
 # Reasoning / tool-calling chain. Primary first, fallbacks after.
 # NOTE: every model used for the executor's tool-calling loop must support
-# function calling — Groq Llama-3.3, GPT-4o-mini, and DeepSeek all do.
+# function calling — all entries below do. The chain spans FIVE providers so a
+# single provider's daily/rate limit (e.g. Groq's 100k tokens/day) just fails
+# over to the next instead of sinking the task.
+#
+# ORDERING: providers NOT in the vision chain come first, and the ones the vision
+# chain also uses are pushed to the end (github, then gemini — gemini is vision's
+# PRIMARY). Reasoning therefore only borrows vision's providers as a last resort,
+# so a reasoning-side fallback can't quietly drain the Gemini quota vision relies
+# on. Override the whole order via the REASONING_MODELS env var.
 REASONING_MODELS = _chain(
     "REASONING_MODELS",
     [
-        "groq/llama-3.3-70b-versatile",
-        "github/gpt-4o-mini",
-        "cerebras/gpt-oss-120b",
+        "groq/llama-3.3-70b-versatile",      # not in vision chain
+        "openrouter/deepseek/deepseek-chat",  # openrouter: only a deep vision fallback
+        "cerebras/gpt-oss-120b",             # not in vision chain
+        "github/gpt-4o-mini",                # vision's LAST fallback (low impact)
+        "gemini/gemini-2.5-flash",           # vision's PRIMARY — reasoning's last resort
     ],
 )
 
