@@ -32,6 +32,10 @@ def _approval_channel(task_id: str) -> str:
     return f"af:approval:{task_id}"
 
 
+def _stop_channel(task_id: str) -> str:
+    return f"af:stop:{task_id}"
+
+
 class EventBus:
     def __init__(self, redis_url: str):
         # decode_responses so pub/sub payloads come back as str, not bytes.
@@ -66,6 +70,36 @@ class EventBus:
         finally:
             try:
                 await pubsub.unsubscribe(_events_channel(task_id))
+                await pubsub.aclose()
+            except Exception:
+                pass
+
+    # ── Reverse: API/WebSocket -> worker (stop requests) ─────────────────────
+    async def send_stop(self, task_id: str) -> None:
+        """Ask the worker running `task_id` to cancel. Fire-and-forget pub/sub:
+        if the worker isn't subscribed (already finished) the message is dropped."""
+        await self._redis.publish(_stop_channel(task_id), json.dumps({"stop": True}))
+
+    @asynccontextmanager
+    async def subscribe_stop(self, task_id: str):
+        """Yield an async iterator that emits once when a stop is requested.
+
+        The worker consumes the first item to set its cancel Event, then the
+        subscription is torn down on exit.
+        """
+        pubsub = self._redis.pubsub()
+        await pubsub.subscribe(_stop_channel(task_id))
+
+        async def _iter():
+            async for message in pubsub.listen():
+                if message.get("type") == "message":
+                    yield json.loads(message["data"])
+
+        try:
+            yield _iter()
+        finally:
+            try:
+                await pubsub.unsubscribe(_stop_channel(task_id))
                 await pubsub.aclose()
             except Exception:
                 pass

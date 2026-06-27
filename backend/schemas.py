@@ -79,7 +79,7 @@ class TaskReport(BaseModel):
     """Comprehensive report of a completed task execution including plan, results, and final answer."""
     task_id: str = Field(..., description="Unique identifier for the task")
     goal: str = Field(..., description="The original user goal")
-    status: Literal["completed", "failed", "partial"] = Field(..., description="Final status of the task")
+    status: Literal["completed", "failed", "partial", "stopped"] = Field(..., description="Final status of the task")
     plan: TaskPlan = Field(..., description="The execution plan that was used")
     step_results: list[StepResult] = Field(default_factory=list, description="Results of each executed step")
     final_answer: str = Field(..., description="Structured result or answer to the user's goal")

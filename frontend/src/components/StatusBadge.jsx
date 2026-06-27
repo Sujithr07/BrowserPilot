@@ -5,7 +5,9 @@ const variants = {
   running:          { label: 'Browsing…',         fg: 'var(--success)', bg: 'var(--success-tint)', pulse: true },
   waiting_approval: { label: 'Awaiting approval', fg: 'var(--warning)', bg: 'var(--warning-tint)', pulse: true },
   completed:        { label: 'Completed',         fg: 'var(--success)', bg: 'var(--success-tint)' },
+  partial:          { label: 'Partial',           fg: 'var(--warning)', bg: 'var(--warning-tint)' },
   failed:           { label: 'Failed',            fg: 'var(--danger)',  bg: 'var(--danger-tint)' },
+  stopped:          { label: 'Stopped',           fg: 'var(--text-secondary)', bg: 'var(--bg-card)' },
 }
 
 export default function StatusBadge({ status, size = 'sm' }) {

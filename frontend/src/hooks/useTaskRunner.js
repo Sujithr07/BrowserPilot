@@ -38,8 +38,15 @@ function reducer(state, action) {
     case 'APPROVAL_CLEARED':
       return { ...state, pendingApproval: null }
     case 'STOPPED':
-      // Interrupt the run but keep steps/screenshots/plan visible.
-      return { ...state, status: 'stopped', pendingApproval: null }
+      // Interrupt the run but keep steps/screenshots/plan visible. When the
+      // backend confirms with a final report, fold in its answer/metrics.
+      return {
+        ...state,
+        status: 'stopped',
+        pendingApproval: null,
+        finalAnswer: action.data?.final_answer ?? state.finalAnswer,
+        metrics: action.data?.metrics ?? state.metrics,
+      }
     case 'METRICS':
       return { ...state, metrics: action.data }
     case 'COMPLETED':
@@ -109,6 +116,10 @@ export function useTaskRunner() {
           dispatch({ type: 'COMPLETED', data: msg.data })
           ws.close()
           break
+        case 'stopped':
+          dispatch({ type: 'STOPPED', data: msg.data })
+          ws.close()
+          break
         case 'error':
           dispatch({ type: 'ERROR', data: msg.data })
           ws.close()
@@ -133,9 +144,11 @@ export function useTaskRunner() {
   }, [])
 
   const stop = useCallback(() => {
-    if (wsRef.current) {
-      wsRef.current.close()
-      wsRef.current = null
+    // Ask the backend to cancel; keep the socket open so it can finish the
+    // current step and send back the final 'stopped' report (which closes it).
+    // Optimistically flip the UI to 'stopped' right away.
+    if (wsRef.current?.readyState === WebSocket.OPEN) {
+      wsRef.current.send(JSON.stringify({ type: 'stop' }))
     }
     dispatch({ type: 'STOPPED' })
   }, [])

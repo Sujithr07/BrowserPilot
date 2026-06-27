@@ -12,6 +12,9 @@ Graceful shutdown: arq installs SIGTERM/SIGINT handlers that stop pulling new
 jobs and let in-flight jobs finish (drain); `on_shutdown` then closes the pooled
 browsers and the Redis bus.
 """
+import asyncio
+import contextlib
+
 from arq.connections import RedisSettings
 
 from backend import config
@@ -46,14 +49,27 @@ async def run_task_job(ctx: dict, goal: str, task_id: str) -> dict:
         log.info("job.approval", extra={"task_id": task_id, "approved": approved})
         return approved
 
+    # Bridge a cross-process Stop into a local cancel Event the crew checks.
+    cancel_event = asyncio.Event()
+
+    async def _watch_stop():
+        async with bus.subscribe_stop(task_id) as stops:
+            async for _ in stops:
+                cancel_event.set()
+                log.info("job.stop_requested", extra={"task_id": task_id})
+                break
+
+    watcher = asyncio.create_task(_watch_stop())
     try:
         # Lease a warmed context; the pool resets and reclaims it on exit.
         async with pool.acquire() as browser:
             crew = AgentFlowCrew(browser=browser)
             report = await crew.run_task(
-                goal, task_id, progress_callback, approval_callback
+                goal, task_id, progress_callback, approval_callback,
+                cancel_event=cancel_event,
             )
-        await bus.publish_event(task_id, "completed", report.model_dump())
+        event_name = "stopped" if report.status == "stopped" else "completed"
+        await bus.publish_event(task_id, event_name, report.model_dump())
         log.info("job.done", extra={"task_id": task_id, "status": report.status})
         return {"task_id": task_id, "status": report.status}
     except Exception as e:
@@ -61,6 +77,10 @@ async def run_task_job(ctx: dict, goal: str, task_id: str) -> dict:
         # Surface the failure to the waiting WebSocket too.
         await bus.publish_event(task_id, "error", {"message": str(e)})
         raise
+    finally:
+        watcher.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await watcher
 
 
 async def startup(ctx: dict):

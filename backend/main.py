@@ -39,6 +39,7 @@ app.mount("/screenshots", StaticFiles(directory="screenshots"), name="screenshot
 active_tasks: dict[str, str] = {}
 websocket_connections: dict[str, WebSocket] = {}
 approval_futures: dict[str, asyncio.Future] = {}
+cancel_events: dict[str, asyncio.Event] = {}
 
 
 @app.on_event("startup")
@@ -92,6 +93,8 @@ async def run_task(body: dict):
 async def _run_task_in_process(goal: str, task_id: str):
     """USE_QUEUE=0: run the crew here and stream over the in-memory socket map."""
     crew = AgentFlowCrew()
+    cancel_event = asyncio.Event()
+    cancel_events[task_id] = cancel_event
 
     async def progress_callback(event_type: str, data: dict):
         ws = websocket_connections.get(task_id)
@@ -116,11 +119,15 @@ async def _run_task_in_process(goal: str, task_id: str):
 
     async def run_background():
         try:
-            report = await crew.run_task(goal, task_id, progress_callback, approval_callback)
+            report = await crew.run_task(
+                goal, task_id, progress_callback, approval_callback,
+                cancel_event=cancel_event,
+            )
             ws = websocket_connections.get(task_id)
             if ws is not None:
+                event_name = "stopped" if report.status == "stopped" else "completed"
                 with contextlib.suppress(Exception):
-                    await ws.send_json({"event": "completed", "data": report.model_dump()})
+                    await ws.send_json({"event": event_name, "data": report.model_dump()})
         except Exception as e:
             ws = websocket_connections.get(task_id)
             if ws is not None:
@@ -128,6 +135,7 @@ async def _run_task_in_process(goal: str, task_id: str):
                     await ws.send_json({"event": "error", "data": {"message": str(e)}})
         finally:
             active_tasks.pop(task_id, None)
+            cancel_events.pop(task_id, None)
 
     asyncio.create_task(run_background())
     active_tasks[task_id] = "running"
@@ -160,6 +168,8 @@ async def _ws_queue_bridge(websocket: WebSocket, task_id: str):
                     msg = json.loads(raw)
                     if msg.get("type") == "approval_response":
                         await bus.send_approval(task_id, bool(msg.get("approved", False)))
+                    elif msg.get("type") == "stop":
+                        await bus.send_stop(task_id)
         except WebSocketDisconnect:
             pass
         finally:
@@ -180,6 +190,15 @@ async def _ws_in_process(websocket: WebSocket, task_id: str):
                     future = approval_futures.pop(task_id)
                     if not future.done():
                         future.set_result(bool(msg.get("approved", False)))
+                elif msg.get("type") == "stop":
+                    # Signal the running crew to cancel, and unblock any pending
+                    # approval so the loop can reach its cancel check immediately.
+                    ev = cancel_events.get(task_id)
+                    if ev is not None:
+                        ev.set()
+                    future = approval_futures.pop(task_id, None)
+                    if future is not None and not future.done():
+                        future.set_result(False)
     except WebSocketDisconnect:
         pass
     finally:

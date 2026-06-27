@@ -1,4 +1,5 @@
 import asyncio
+from datetime import datetime
 
 from backend.agents.planner import plan_task, replan_task, decompose_task
 from backend.agents.executor import ExecutorAgent
@@ -43,6 +44,7 @@ class AgentFlowCrew:
         task_id: str,
         progress_callback=None,
         approval_callback=None,
+        cancel_event=None,
     ) -> TaskReport:
         # Serialize progress emits: parallel branches call this concurrently and a
         # WebSocket / pub/sub sink can't be written from two tasks at once.
@@ -65,11 +67,26 @@ class AgentFlowCrew:
 
             # Step 2/3: Execute (+ replan once on failure), parallel or sequential.
             if len(branches) > 1:
-                results = await self._run_parallel(branches, approval_callback, emit)
+                results = await self._run_parallel(
+                    branches, approval_callback, emit, cancel_event=cancel_event
+                )
             else:
                 results = await self._run_branch(
-                    self.executor, branches[0], approval_callback, emit, step_offset=0
+                    self.executor, branches[0], approval_callback, emit,
+                    step_offset=0, cancel_event=cancel_event,
                 )
+
+            # Stopped by the user: skip the verifier (another LLM call) and persist
+            # a partial report from whatever steps completed.
+            if cancel_event is not None and cancel_event.is_set():
+                report = self._build_stopped_report(goal, task_id, combined_plan, results)
+                summary = metrics.task_summary(task_id)
+                report.metrics = TaskMetrics(**{
+                    k: v for k, v in summary.items() if k in TaskMetrics.model_fields
+                })
+                await emit("metrics", summary)
+                await save_task(report)
+                return report
 
             # Step 4: Verify over the original goal and the merged results.
             report = await self.verifier.verify_and_report(goal, combined_plan, results)
@@ -88,6 +105,22 @@ class AgentFlowCrew:
             return report
         finally:
             metrics.reset_task(_metrics_token)
+
+    def _build_stopped_report(self, goal, task_id, plan, results) -> TaskReport:
+        """Assemble a report for a user-stopped run from the partial results,
+        without invoking the verifier (so a Stop never spends more tokens)."""
+        successful = sum(1 for r in results if r.success)
+        return TaskReport(
+            task_id=task_id,
+            goal=goal,
+            status="stopped",
+            plan=plan,
+            step_results=results,
+            final_answer="Task stopped by the user before completion.",
+            total_steps=len(results),
+            successful_steps=successful,
+            created_at=datetime.utcnow().isoformat(),
+        )
 
     # ── Planning ──────────────────────────────────────────────────────────────
     async def _build_branches(self, goal: str) -> list[TaskPlan]:
@@ -128,21 +161,25 @@ class AgentFlowCrew:
 
     # ── Execution ───────────────────────────────────────────────────────────--
     async def _run_branch(
-        self, executor, plan, approval_callback, emit, step_offset=0, branch=None
+        self, executor, plan, approval_callback, emit, step_offset=0, branch=None,
+        cancel_event=None,
     ) -> list[StepResult]:
         """Execute one plan, emit each step, and replan once if it ends on a
         failure. This is the original sequential pipeline, factored out so both
         the single-branch and per-branch parallel paths share it. `branch` (a
         0-based index, or None for a single-branch task) tags the emitted steps."""
         results = await executor.execute_plan(
-            plan, approval_callback=approval_callback, step_offset=step_offset
+            plan, approval_callback=approval_callback, step_offset=step_offset,
+            cancel_event=cancel_event,
         )
         await self._emit_steps(results, branch, emit)
 
         # Re-plan once if the last step failed (task_complete always leaves the
-        # last step as success, so this only fires on a genuine dead end).
+        # last step as success, so this only fires on a genuine dead end). Skip the
+        # recovery (an LLM call + more steps) entirely if the user has stopped.
+        stopped = cancel_event is not None and cancel_event.is_set()
         failed = [r for r in results if not r.success]
-        if failed and results and not results[-1].success:
+        if failed and results and not results[-1].success and not stopped:
             successful = [r for r in results if r.success]
             recovery_plan = await self.planner.replan(plan.goal, successful, failed)
             await emit("replanned", recovery_plan.model_dump())
@@ -150,13 +187,14 @@ class AgentFlowCrew:
                 recovery_plan,
                 approval_callback=approval_callback,
                 step_offset=step_offset + len(results),
+                cancel_event=cancel_event,
             )
             await self._emit_steps(recovery_results, branch, emit)
             results = successful + recovery_results
         return results
 
     async def _run_parallel(
-        self, branches, approval_callback, emit
+        self, branches, approval_callback, emit, cancel_event=None
     ) -> list[StepResult]:
         """Run branches concurrently and merge their step results. Branch 0 uses
         the primary executor; extra branches get standalone browsers so the pool
@@ -165,7 +203,7 @@ class AgentFlowCrew:
             executor = self.executor if i == 0 else ExecutorAgent(browser=None)
             return await self._run_branch(
                 executor, branch, approval_callback, emit,
-                step_offset=i * _BRANCH_STRIDE, branch=i,
+                step_offset=i * _BRANCH_STRIDE, branch=i, cancel_event=cancel_event,
             )
 
         branch_results = await asyncio.gather(

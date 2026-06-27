@@ -551,11 +551,17 @@ class ExecutorAgent:
         plan: TaskPlan,
         approval_callback=None,
         step_offset: int = 0,
+        cancel_event=None,
     ) -> list[StepResult]:
         """
         Run an agentic tool-calling loop driven by Groq function calling.
         step_offset shifts step numbers so re-plan steps continue from where the
         original execution left off (e.g. offset=5 means steps start at 6).
+
+        cancel_event (an asyncio.Event) lets a caller interrupt the run: it's
+        checked at the top of each step so a user "Stop" halts the loop before the
+        next LLM/browser action — within one step — and the browser still tears
+        down cleanly below.
         """
         results = []
         task_id = hashlib.md5(plan.goal.encode()).hexdigest()[:8]
@@ -603,6 +609,11 @@ class ExecutorAgent:
         HISTORY_WINDOW = int(os.getenv("HISTORY_WINDOW", "6"))
 
         for step_num in range(1, MAX_STEPS + 1):
+            # Cooperative stop: bail before starting another step (no new LLM/
+            # browser work) when the caller has requested cancellation.
+            if cancel_event is not None and cancel_event.is_set():
+                break
+
             actual_step = step_num + step_offset
             screenshot_path = f"screenshots/{task_id}_{actual_step}.{SHOT_EXT}"
             success = True
