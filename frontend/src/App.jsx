@@ -22,12 +22,13 @@ function extractUrl(steps) {
 }
 
 export default function App() {
-  const { state: taskState, start, sendApproval, reset } = useTaskRunner()
+  const { state: taskState, start, sendApproval, stop, reset } = useTaskRunner()
   const { history, refetch } = useTaskHistory()
   const [selectedTaskId, setSelectedTaskId] = useState(null)
   const [replayState, setReplayState] = useState(null) // synthetic state for historical tasks
   const [activeGoal, setActiveGoal] = useState('')
   const [historyOpen, setHistoryOpen] = useState(false)
+  const [selectedStepIdx, setSelectedStepIdx] = useState(null) // pinned step screenshot (null = follow latest)
 
   // The active displayed state: live task or loaded replay
   const displayState = selectedTaskId && replayState ? replayState : taskState
@@ -37,6 +38,7 @@ export default function App() {
   const handleSubmitGoal = useCallback(async (goal) => {
     setSelectedTaskId(null)
     setReplayState(null)
+    setSelectedStepIdx(null)
     setActiveGoal(goal)
     const taskId = await start(goal)
     if (taskId) {
@@ -47,6 +49,7 @@ export default function App() {
 
   const handleSelectTask = useCallback(async (taskId) => {
     setHistoryOpen(false)
+    setSelectedStepIdx(null)
     if (taskId === selectedTaskId && !replayState) return
 
     try {
@@ -81,20 +84,29 @@ export default function App() {
     setReplayState(null)
     setActiveGoal('')
     setHistoryOpen(false)
+    setSelectedStepIdx(null)
     reset()
   }, [reset])
 
+  // Interrupt the live run but keep the task on screen.
   const handleStop = useCallback(() => {
-    reset()
-    setSelectedTaskId(null)
-    setReplayState(null)
-    setActiveGoal('')
-  }, [reset])
+    stop()
+  }, [stop])
+
+  const handleSelectStep = useCallback((idx) => {
+    setSelectedStepIdx(cur => (cur === idx ? null : idx))
+  }, [])
 
   const handleApprove = useCallback(() => sendApproval(true), [sendApproval])
   const handleDeny = useCallback(() => sendApproval(false), [sendApproval])
 
   const pageUrl = extractUrl(displayState.steps)
+
+  // Hero shows the pinned step's screenshot when one is selected, else the latest.
+  const pinnedStep = selectedStepIdx != null ? displayState.steps[selectedStepIdx] : null
+  const heroScreenshot = pinnedStep?.screenshot_path
+    ? `${API_URL}/${pinnedStep.screenshot_path}`
+    : displayState.latestScreenshot
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', height: '100vh', overflow: 'hidden', background: 'var(--bg-page)' }}>
@@ -108,14 +120,17 @@ export default function App() {
       />
 
       {/* Two-panel row */}
-      <div style={{ position: 'relative', display: 'flex', height: 'calc(100vh - 40px)', overflow: 'hidden' }}>
+      <div style={{ position: 'relative', display: 'flex', height: 'calc(100vh - 56px)', overflow: 'hidden' }}>
         <TaskPanel
           goal={activeGoal}
           status={displayState.status}
           plan={displayState.plan}
           steps={displayState.steps}
           finalAnswer={displayState.finalAnswer}
+          error={displayState.error}
           metrics={displayState.metrics}
+          selectedStepIdx={selectedStepIdx}
+          onSelectStep={handleSelectStep}
           onSubmitGoal={handleSubmitGoal}
           onToggleHistory={() => setHistoryOpen(o => !o)}
         />
@@ -123,7 +138,7 @@ export default function App() {
         {/* Right: browser hero */}
         <div style={{ flex: 1, minWidth: 0, background: 'var(--bg-page)' }}>
           <BrowserViewport
-            screenshotUrl={displayState.latestScreenshot}
+            screenshotUrl={heroScreenshot}
             pageUrl={pageUrl}
             approval={taskState.pendingApproval}
             onApprove={handleApprove}

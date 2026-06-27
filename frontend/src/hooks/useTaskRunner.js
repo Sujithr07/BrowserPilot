@@ -3,7 +3,7 @@ import { useReducer, useRef, useCallback } from 'react'
 const API_URL = 'http://localhost:8000'
 
 const initialState = {
-  status: 'idle', // idle | connecting | planning | running | completed | failed
+  status: 'idle', // idle | connecting | planning | running | completed | failed | stopped
   plan: null,
   steps: [],
   latestScreenshot: null,
@@ -37,6 +37,9 @@ function reducer(state, action) {
       return { ...state, pendingApproval: action.data }
     case 'APPROVAL_CLEARED':
       return { ...state, pendingApproval: null }
+    case 'STOPPED':
+      // Interrupt the run but keep steps/screenshots/plan visible.
+      return { ...state, status: 'stopped', pendingApproval: null }
     case 'METRICS':
       return { ...state, metrics: action.data }
     case 'COMPLETED':
@@ -129,6 +132,14 @@ export function useTaskRunner() {
     dispatch({ type: 'APPROVAL_CLEARED' })
   }, [])
 
+  const stop = useCallback(() => {
+    if (wsRef.current) {
+      wsRef.current.close()
+      wsRef.current = null
+    }
+    dispatch({ type: 'STOPPED' })
+  }, [])
+
   const reset = useCallback(() => {
     if (wsRef.current) {
       wsRef.current.close()
@@ -137,5 +148,5 @@ export function useTaskRunner() {
     dispatch({ type: 'RESET' })
   }, [])
 
-  return { state, start, sendApproval, reset }
+  return { state, start, sendApproval, stop, reset }
 }

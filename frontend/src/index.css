@@ -72,3 +72,7 @@ body {
 
 /* Placeholder color */
 input::placeholder, textarea::placeholder { color: var(--text-muted); }
+
+/* Clickable step rows (with a screenshot to view) */
+.step-row { transition: background 120ms ease; }
+.step-row:hover { background: var(--bg-card); }

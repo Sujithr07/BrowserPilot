@@ -5,21 +5,21 @@ function EmptyState() {
   return (
     <div
       className="flex flex-col items-center justify-center select-none"
-      style={{ width: '100%', height: '100%', gap: 12 }}
+      style={{ width: '100%', height: '100%', gap: 18 }}
     >
       <svg
         viewBox="0 0 24 24"
         fill="none"
         stroke="currentColor"
         strokeWidth="1.5"
-        style={{ width: 40, height: 40, color: 'var(--border-strong)' }}
+        style={{ width: 56, height: 56, color: 'var(--border-strong)' }}
       >
         <rect x="3" y="4" width="18" height="16" rx="2" />
         <path strokeLinecap="round" d="M3 9h18" />
         <circle cx="6" cy="6.5" r="0.5" fill="currentColor" />
         <circle cx="8" cy="6.5" r="0.5" fill="currentColor" />
       </svg>
-      <span style={{ fontSize: 13, color: 'var(--text-secondary)' }}>Waiting for browser…</span>
+      <span style={{ fontSize: 15, color: 'var(--text-secondary)' }}>Waiting for browser…</span>
     </div>
   )
 }
@@ -35,17 +35,17 @@ export default function BrowserViewport({ screenshotUrl, pageUrl, approval, onAp
       <div
         className="flex items-center"
         style={{
-          height: 36,
+          height: 48,
           background: 'var(--bg-panel)',
           borderBottom: '1px solid var(--border)',
-          padding: '0 12px',
-          gap: 8,
+          padding: '0 18px',
+          gap: 12,
         }}
       >
-        <div className="flex" style={{ gap: 6 }}>
-          <span style={{ width: 8, height: 8, borderRadius: '50%', background: 'var(--border-strong)' }} />
-          <span style={{ width: 8, height: 8, borderRadius: '50%', background: 'var(--border-strong)' }} />
-          <span style={{ width: 8, height: 8, borderRadius: '50%', background: 'var(--border-strong)' }} />
+        <div className="flex" style={{ gap: 8 }}>
+          <span style={{ width: 11, height: 11, borderRadius: '50%', background: 'var(--border-strong)' }} />
+          <span style={{ width: 11, height: 11, borderRadius: '50%', background: 'var(--border-strong)' }} />
+          <span style={{ width: 11, height: 11, borderRadius: '50%', background: 'var(--border-strong)' }} />
         </div>
 
         <div
@@ -54,9 +54,9 @@ export default function BrowserViewport({ screenshotUrl, pageUrl, approval, onAp
             flex: 1,
             background: 'var(--bg-card)',
             border: '1px solid var(--border)',
-            borderRadius: 5,
-            padding: '3px 10px',
-            fontSize: 11,
+            borderRadius: 8,
+            padding: '6px 14px',
+            fontSize: 13,
             fontFamily: 'monospace',
             color: 'var(--text-muted)',
           }}
@@ -64,7 +64,7 @@ export default function BrowserViewport({ screenshotUrl, pageUrl, approval, onAp
           {pageUrl || 'about:blank'}
         </div>
 
-        <span style={{ fontSize: 13, color: 'var(--text-muted)' }}>↺</span>
+        <span style={{ fontSize: 16, color: 'var(--text-muted)' }}>↺</span>
       </div>
 
       {/* Viewport content */}
@@ -72,7 +72,7 @@ export default function BrowserViewport({ screenshotUrl, pageUrl, approval, onAp
         style={{
           position: 'relative',
           width: '100%',
-          height: 'calc(100% - 36px)',
+          height: 'calc(100% - 48px)',
           background: 'var(--bg-page)',
           overflow: 'hidden',
         }}
