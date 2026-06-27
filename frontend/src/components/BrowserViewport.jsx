@@ -1,5 +1,6 @@
 import { useState } from 'react'
 import ApprovalBanner from './ApprovalBanner'
+import HeroComposer from './HeroComposer'
 
 function EmptyState() {
   return (
@@ -24,10 +25,19 @@ function EmptyState() {
   )
 }
 
-export default function BrowserViewport({ screenshotUrl, pageUrl, approval, onApprove, onDeny }) {
+export default function BrowserViewport({ screenshotUrl, pageUrl, status, approval, onSubmitGoal, onApprove, onDeny }) {
   // Track which url has finished loading so we can fade it in (derived, no effect).
   const [loadedUrl, setLoadedUrl] = useState(null)
   const loaded = loadedUrl === screenshotUrl
+
+  // Idle first-run: show the centered composer as the hero (no browser chrome).
+  if (status === 'idle' && !screenshotUrl) {
+    return (
+      <div style={{ width: '100%', height: '100%', background: 'var(--bg-page)' }}>
+        <HeroComposer onSubmit={onSubmitGoal} />
+      </div>
+    )
+  }
 
   return (
     <div style={{ position: 'relative', width: '100%', height: '100%' }}>

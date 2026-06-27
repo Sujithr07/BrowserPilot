@@ -140,7 +140,9 @@ export default function App() {
           <BrowserViewport
             screenshotUrl={heroScreenshot}
             pageUrl={pageUrl}
+            status={displayState.status}
             approval={taskState.pendingApproval}
+            onSubmitGoal={handleSubmitGoal}
             onApprove={handleApprove}
             onDeny={handleDeny}
           />

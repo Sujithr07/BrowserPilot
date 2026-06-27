@@ -37,10 +37,21 @@ function StatusBadge({ status }) {
 }
 
 export default function TopBar({ taskId, status, stepCount = 0, totalSteps, isRunning, onStop }) {
+  // Thin progress bar under the bar: steps done / estimated, full on completion.
+  const total = totalSteps ?? 0
+  let progress = total > 0 ? Math.min(stepCount / total, 1) : 0
+  if (status === 'completed') progress = 1
+  const barColor =
+    status === 'failed' ? 'var(--danger)'
+    : status === 'completed' ? 'var(--success)'
+    : status === 'stopped' ? 'var(--text-muted)'
+    : 'var(--accent)'
+
   return (
     <div
       className="flex-shrink-0 flex items-center justify-between"
       style={{
+        position: 'relative',
         height: 56,
         background: 'var(--bg-panel)',
         borderBottom: '1px solid var(--border)',
@@ -88,6 +99,20 @@ export default function TopBar({ taskId, status, stepCount = 0, totalSteps, isRu
           </button>
         )}
       </div>
+
+      {/* Progress bar */}
+      <div
+        style={{
+          position: 'absolute',
+          left: 0,
+          bottom: 0,
+          height: 2,
+          width: `${progress * 100}%`,
+          background: barColor,
+          opacity: progress > 0 ? 1 : 0,
+          transition: 'width 300ms ease, opacity 300ms ease',
+        }}
+      />
     </div>
   )
 }
