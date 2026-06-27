@@ -124,11 +124,22 @@ function StepRow({ step, planStep, isActive, selected, onPin }) {
     onPin?.()
   }
 
+  const toggle = () => setExpanded((e) => !e)
+
   return (
-    <div style={{ marginLeft: -8, marginRight: -8 }}>
+    <div className="step-in" style={{ marginLeft: -8, marginRight: -8 }}>
       <div
         className="step-row"
-        onClick={() => setExpanded((e) => !e)}
+        role="button"
+        tabIndex={0}
+        aria-expanded={expanded}
+        onClick={toggle}
+        onKeyDown={(e) => {
+          if (e.key === 'Enter' || e.key === ' ') {
+            e.preventDefault()
+            toggle()
+          }
+        }}
         style={{
           display: 'flex',
           alignItems: 'flex-start',
@@ -324,6 +335,7 @@ export default function TaskPanel({
       {/* History toggle (top-right, inside sidebar) */}
       <button
         onClick={onToggleHistory}
+        aria-label="Toggle task history"
         className="flex items-center"
         style={{
           position: 'absolute',

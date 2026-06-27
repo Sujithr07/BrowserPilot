@@ -76,3 +76,41 @@ input::placeholder, textarea::placeholder { color: var(--text-muted); }
 /* Clickable step rows (with a screenshot to view) */
 .step-row { transition: background 120ms ease; }
 .step-row:hover { background: var(--bg-card); }
+
+/* Step rows fade/slide in as they stream into the log */
+@keyframes step-in {
+  from { opacity: 0; transform: translateY(6px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+.step-in { animation: step-in 260ms ease both; }
+
+/* Browser screenshot crossfade — the new frame fades in over the previous one */
+@keyframes screenshot-in {
+  from { opacity: 0; }
+  to   { opacity: 1; }
+}
+.screenshot-in { animation: screenshot-in 320ms ease; }
+
+/* One-shot rotation for the reload control */
+@keyframes spin { to { transform: rotate(360deg); } }
+.spin { animation: spin 600ms linear; }
+
+/* Icon-only chrome buttons (e.g. reload) */
+.icon-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: none;
+  background: transparent;
+  border-radius: 6px;
+  padding: 4px;
+  cursor: pointer;
+  color: var(--text-muted);
+  transition: color 120ms ease, background 120ms ease;
+}
+.icon-btn:hover:not(:disabled) { color: var(--text-secondary); background: var(--bg-card); }
+.icon-btn:disabled { color: var(--border-strong); cursor: default; }
+
+@media (prefers-reduced-motion: reduce) {
+  .step-in, .screenshot-in, .pulse-dot, .spin { animation: none; }
+}

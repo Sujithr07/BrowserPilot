@@ -85,6 +85,7 @@ export default function TopBar({ taskId, status, stepCount = 0, totalSteps, isRu
         {isRunning && (
           <button
             onClick={onStop}
+            aria-label="Stop task"
             style={{
               fontSize: 13,
               border: '1px solid var(--danger)',

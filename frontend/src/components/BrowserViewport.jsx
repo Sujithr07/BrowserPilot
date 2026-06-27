@@ -13,6 +13,7 @@ function EmptyState() {
         fill="none"
         stroke="currentColor"
         strokeWidth="1.5"
+        aria-hidden="true"
         style={{ width: 56, height: 56, color: 'var(--border-strong)' }}
       >
         <rect x="3" y="4" width="18" height="16" rx="2" />
@@ -25,10 +26,35 @@ function EmptyState() {
   )
 }
 
+const imgLayer = {
+  position: 'absolute',
+  inset: 0,
+  width: '100%',
+  height: '100%',
+  objectFit: 'contain',
+}
+
 export default function BrowserViewport({ screenshotUrl, pageUrl, status, approval, onSubmitGoal, onApprove, onDeny }) {
-  // Track which url has finished loading so we can fade it in (derived, no effect).
-  const [loadedUrl, setLoadedUrl] = useState(null)
-  const loaded = loadedUrl === screenshotUrl
+  // Crossfade: keep the previous frame beneath while the new one fades in over
+  // it. Tracked with the guarded set-during-render pattern (no effect needed).
+  const [cur, setCur] = useState(screenshotUrl ?? null)
+  const [prev, setPrev] = useState(null)
+  if (screenshotUrl !== cur) {
+    setPrev(cur)
+    setCur(screenshotUrl ?? null)
+  }
+
+  // Reload control: bump a cache-buster so the same screenshot path re-fetches,
+  // and spin the glyph briefly for feedback.
+  const [reloadKey, setReloadKey] = useState(0)
+  const [spinning, setSpinning] = useState(false)
+  const handleReload = () => {
+    if (!cur) return
+    setReloadKey((k) => k + 1)
+    setSpinning(true)
+    setTimeout(() => setSpinning(false), 600)
+  }
+  const curSrc = cur ? `${cur}${cur.includes('?') ? '&' : '?'}r=${reloadKey}` : cur
 
   // Idle first-run: show the centered composer as the hero (no browser chrome).
   if (status === 'idle' && !screenshotUrl) {
@@ -52,7 +78,7 @@ export default function BrowserViewport({ screenshotUrl, pageUrl, status, approv
           gap: 12,
         }}
       >
-        <div className="flex" style={{ gap: 8 }}>
+        <div className="flex" style={{ gap: 8 }} aria-hidden="true">
           <span style={{ width: 11, height: 11, borderRadius: '50%', background: 'var(--border-strong)' }} />
           <span style={{ width: 11, height: 11, borderRadius: '50%', background: 'var(--border-strong)' }} />
           <span style={{ width: 11, height: 11, borderRadius: '50%', background: 'var(--border-strong)' }} />
@@ -74,7 +100,15 @@ export default function BrowserViewport({ screenshotUrl, pageUrl, status, approv
           {pageUrl || 'about:blank'}
         </div>
 
-        <span style={{ fontSize: 16, color: 'var(--text-muted)' }}>↺</span>
+        <button
+          className="icon-btn"
+          onClick={handleReload}
+          disabled={!cur}
+          aria-label="Reload screenshot"
+          title="Reload screenshot"
+        >
+          <span className={spinning ? 'spin' : ''} style={{ display: 'inline-block', fontSize: 16, lineHeight: 1 }}>↺</span>
+        </button>
       </div>
 
       {/* Viewport content */}
@@ -87,22 +121,20 @@ export default function BrowserViewport({ screenshotUrl, pageUrl, status, approv
           overflow: 'hidden',
         }}
       >
-        {!screenshotUrl && <EmptyState />}
+        {!cur && <EmptyState />}
 
-        {screenshotUrl && (
+        {/* Previous frame stays beneath while the current one fades in over it. */}
+        {cur && prev && (
+          <img key={prev} src={prev} alt="" aria-hidden="true" style={imgLayer} />
+        )}
+
+        {cur && (
           <img
-            key={screenshotUrl}
-            src={screenshotUrl}
+            key={cur}
+            className="screenshot-in"
+            src={curSrc}
             alt="Current browser view"
-            onLoad={() => setLoadedUrl(screenshotUrl)}
-            style={{
-              width: '100%',
-              height: '100%',
-              objectFit: 'contain',
-              background: 'var(--bg-page)',
-              opacity: loaded ? 1 : 0,
-              transition: 'opacity 300ms ease',
-            }}
+            style={imgLayer}
           />
         )}
 

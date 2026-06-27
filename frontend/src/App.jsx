@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from 'react'
+import { useState, useEffect, useRef, useCallback } from 'react'
 import './App.css'
 
 import { useTaskRunner, readActiveTask } from './hooks/useTaskRunner'
@@ -30,6 +30,7 @@ export default function App() {
   const [activeGoal, setActiveGoal] = useState(() => readActiveTask()?.goal ?? '')
   const [historyOpen, setHistoryOpen] = useState(false)
   const [selectedStepIdx, setSelectedStepIdx] = useState(null) // pinned step screenshot (null = follow latest)
+  const drawerRef = useRef(null)
 
   // On mount, reconnect to a task that was still running before a page refresh.
   useEffect(() => {
@@ -45,6 +46,50 @@ export default function App() {
       }
     })
   }, [resume, refetch])
+
+  // History drawer: close on Esc and trap focus inside it while open.
+  useEffect(() => {
+    if (!historyOpen) return
+    const node = drawerRef.current
+    if (!node) return
+
+    const previouslyFocused = document.activeElement
+    const focusablesIn = () =>
+      node.querySelectorAll(
+        'a[href], button:not([disabled]), input:not([disabled]), [tabindex]:not([tabindex="-1"])'
+      )
+
+    const first = focusablesIn()[0]
+    ;(first ?? node).focus()
+
+    const onKeyDown = (e) => {
+      if (e.key === 'Escape') {
+        setHistoryOpen(false)
+        return
+      }
+      if (e.key !== 'Tab') return
+      const items = focusablesIn()
+      if (items.length === 0) {
+        e.preventDefault()
+        return
+      }
+      const firstEl = items[0]
+      const lastEl = items[items.length - 1]
+      if (e.shiftKey && document.activeElement === firstEl) {
+        e.preventDefault()
+        lastEl.focus()
+      } else if (!e.shiftKey && document.activeElement === lastEl) {
+        e.preventDefault()
+        firstEl.focus()
+      }
+    }
+
+    document.addEventListener('keydown', onKeyDown)
+    return () => {
+      document.removeEventListener('keydown', onKeyDown)
+      if (previouslyFocused instanceof HTMLElement) previouslyFocused.focus()
+    }
+  }, [historyOpen])
 
   // The active displayed state: live task or loaded replay
   const displayState = selectedTaskId && replayState ? replayState : taskState
@@ -178,6 +223,12 @@ export default function App() {
           }}
         />
         <div
+          ref={drawerRef}
+          role="dialog"
+          aria-modal="true"
+          aria-label="Task history"
+          tabIndex={-1}
+          inert={!historyOpen}
           style={{
             position: 'absolute',
             top: 0,
@@ -187,6 +238,7 @@ export default function App() {
             height: '100%',
             transform: historyOpen ? 'translateX(0)' : 'translateX(-100%)',
             transition: 'transform 200ms ease',
+            outline: 'none',
           }}
         >
           <Sidebar
