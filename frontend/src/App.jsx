@@ -1,7 +1,7 @@
-import { useState, useCallback } from 'react'
+import { useState, useEffect, useCallback } from 'react'
 import './App.css'
 
-import { useTaskRunner } from './hooks/useTaskRunner'
+import { useTaskRunner, readActiveTask } from './hooks/useTaskRunner'
 import { useTaskHistory } from './hooks/useTaskHistory'
 
 import Sidebar from './components/Sidebar'
@@ -22,13 +22,29 @@ function extractUrl(steps) {
 }
 
 export default function App() {
-  const { state: taskState, start, sendApproval, stop, reset } = useTaskRunner()
+  const { state: taskState, start, resume, sendApproval, stop, reset } = useTaskRunner()
   const { history, refetch } = useTaskHistory()
-  const [selectedTaskId, setSelectedTaskId] = useState(null)
+  // Seed from any task that was running before a refresh (see resume effect).
+  const [selectedTaskId, setSelectedTaskId] = useState(() => readActiveTask()?.taskId ?? null)
   const [replayState, setReplayState] = useState(null) // synthetic state for historical tasks
-  const [activeGoal, setActiveGoal] = useState('')
+  const [activeGoal, setActiveGoal] = useState(() => readActiveTask()?.goal ?? '')
   const [historyOpen, setHistoryOpen] = useState(false)
   const [selectedStepIdx, setSelectedStepIdx] = useState(null) // pinned step screenshot (null = follow latest)
+
+  // On mount, reconnect to a task that was still running before a page refresh.
+  useEffect(() => {
+    const active = readActiveTask()
+    if (!active?.taskId) return
+    resume(active.taskId).then((resumedId) => {
+      if (!resumedId) {
+        // The task turned out to be gone — clear the stale selection.
+        setSelectedTaskId(null)
+        setActiveGoal('')
+      } else {
+        setTimeout(refetch, 2000)
+      }
+    })
+  }, [resume, refetch])
 
   // The active displayed state: live task or loaded replay
   const displayState = selectedTaskId && replayState ? replayState : taskState

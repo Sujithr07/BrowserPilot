@@ -38,7 +38,7 @@ function EyeIcon({ active }) {
       fill="none"
       stroke="currentColor"
       strokeWidth="2"
-      style={{ width: 14, height: 14, flexShrink: 0, marginTop: 4, color: active ? 'var(--accent)' : 'var(--text-muted)' }}
+      style={{ width: 14, height: 14, flexShrink: 0, color: active ? 'var(--accent)' : 'var(--text-muted)' }}
     >
       <path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7-10-7-10-7z" />
       <circle cx="12" cy="12" r="3" />
@@ -46,49 +46,180 @@ function EyeIcon({ active }) {
   )
 }
 
-function StepRow({ step, planStep, isActive, selected, onClick }) {
+function Chevron({ open }) {
+  return (
+    <svg
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="2"
+      style={{
+        width: 13,
+        height: 13,
+        flexShrink: 0,
+        marginTop: 5,
+        color: 'var(--text-muted)',
+        transform: open ? 'rotate(90deg)' : 'rotate(0deg)',
+        transition: 'transform 120ms ease',
+      }}
+    >
+      <path strokeLinecap="round" strokeLinejoin="round" d="M9 6l6 6-6 6" />
+    </svg>
+  )
+}
+
+// One labelled line in the expanded detail; renders nothing when empty.
+function DetailField({ k, v, mono, danger }) {
+  if (v == null || v === '') return null
+  return (
+    <div style={{ marginTop: 9 }}>
+      <div
+        style={{
+          fontSize: 10.5,
+          fontWeight: 600,
+          letterSpacing: '0.06em',
+          textTransform: 'uppercase',
+          color: 'var(--text-muted)',
+        }}
+      >
+        {k}
+      </div>
+      <div
+        style={{
+          marginTop: 3,
+          fontSize: 12.5,
+          lineHeight: 1.55,
+          color: danger ? 'var(--danger)' : 'var(--text-secondary)',
+          fontFamily: mono ? 'monospace' : 'inherit',
+          whiteSpace: 'pre-wrap',
+          wordBreak: 'break-word',
+        }}
+      >
+        {v}
+      </div>
+    </div>
+  )
+}
+
+function StepRow({ step, planStep, isActive, selected, onPin }) {
+  const [expanded, setExpanded] = useState(false)
   const failed = step.success === false
   const branch = branchOf(step)
   const hasShot = !!step.screenshot_path
-
   const dotColor = failed ? 'var(--danger)' : isActive ? 'var(--accent)' : 'var(--success)'
 
+  // Tool/target/instruction live on the plan step; observation/data/error on the
+  // result. Pull whatever's available so the detail works mid-run and on replay.
+  const action = planStep?.tool
+    ? (planStep.target ? `${planStep.tool} → ${planStep.target}` : planStep.tool)
+    : null
+  const instruction = planStep?.instruction || step.instruction
+  const extracted =
+    step.extracted_data && Object.keys(step.extracted_data).length
+      ? JSON.stringify(step.extracted_data, null, 2)
+      : null
+
+  const pin = (e) => {
+    e.stopPropagation()
+    onPin?.()
+  }
+
   return (
-    <div
-      className={hasShot ? 'step-row' : ''}
-      onClick={hasShot ? onClick : undefined}
-      style={{
-        display: 'flex',
-        alignItems: 'flex-start',
-        gap: 10,
-        padding: '6px 8px',
-        marginLeft: -8,
-        marginRight: -8,
-        borderRadius: 8,
-        background: selected ? 'var(--bg-card)' : 'transparent',
-        cursor: hasShot ? 'pointer' : 'default',
-      }}
-    >
-      <span
-        className={isActive ? 'pulse-dot' : ''}
-        style={{ width: 8, height: 8, borderRadius: '50%', background: dotColor, marginTop: 6, flexShrink: 0 }}
-      />
-      <span
+    <div style={{ marginLeft: -8, marginRight: -8 }}>
+      <div
+        className="step-row"
+        onClick={() => setExpanded((e) => !e)}
         style={{
-          flex: 1,
-          minWidth: 0,
-          fontSize: 13,
-          color: isActive ? 'var(--text-primary)' : 'var(--text-secondary)',
-          fontWeight: isActive ? 500 : 400,
-          lineHeight: 1.6,
+          display: 'flex',
+          alignItems: 'flex-start',
+          gap: 10,
+          padding: '6px 8px',
+          borderRadius: 8,
+          background: expanded || selected ? 'var(--bg-card)' : 'transparent',
+          cursor: 'pointer',
         }}
       >
-        {branch ? (
-          <span style={{ fontSize: 11, color: 'var(--text-muted)', marginRight: 5 }}>[branch {branch}]</span>
-        ) : null}
-        {describeStep(step, planStep)}
-      </span>
-      {hasShot && <EyeIcon active={selected} />}
+        <span
+          className={isActive ? 'pulse-dot' : ''}
+          style={{ width: 8, height: 8, borderRadius: '50%', background: dotColor, marginTop: 6, flexShrink: 0 }}
+        />
+        <span
+          style={{
+            flex: 1,
+            minWidth: 0,
+            fontSize: 13,
+            color: isActive ? 'var(--text-primary)' : 'var(--text-secondary)',
+            fontWeight: isActive ? 500 : 400,
+            lineHeight: 1.6,
+          }}
+        >
+          {branch ? (
+            <span style={{ fontSize: 11, color: 'var(--text-muted)', marginRight: 5 }}>[branch {branch}]</span>
+          ) : null}
+          {describeStep(step, planStep)}
+        </span>
+        {hasShot && (
+          <button
+            onClick={pin}
+            title={selected ? 'Showing in viewport' : 'Show screenshot'}
+            aria-label="Show screenshot in viewport"
+            style={{
+              flexShrink: 0,
+              marginTop: 3,
+              padding: 0,
+              border: 'none',
+              background: 'transparent',
+              cursor: 'pointer',
+              display: 'flex',
+            }}
+          >
+            <EyeIcon active={selected} />
+          </button>
+        )}
+        <Chevron open={expanded} />
+      </div>
+
+      {expanded && (
+        <div
+          style={{
+            marginLeft: 18,
+            marginRight: 8,
+            marginBottom: 6,
+            marginTop: 2,
+            paddingLeft: 12,
+            borderLeft: '1px solid var(--border)',
+          }}
+        >
+          <DetailField k="Status" v={failed ? 'Failed' : 'Succeeded'} danger={failed} />
+          <DetailField k="Action" v={action} mono />
+          <DetailField k="Instruction" v={instruction} />
+          <DetailField k="Expected" v={planStep?.expected_outcome} />
+          <DetailField k="Observation" v={step.observation} />
+          <DetailField k="Extracted data" v={extracted} mono />
+          <DetailField k="Error" v={step.error} danger />
+          {hasShot && (
+            <button
+              onClick={pin}
+              style={{
+                marginTop: 11,
+                display: 'inline-flex',
+                alignItems: 'center',
+                gap: 6,
+                background: 'transparent',
+                border: '1px solid var(--border)',
+                borderRadius: 7,
+                padding: '5px 11px',
+                fontSize: 12,
+                color: selected ? 'var(--accent)' : 'var(--text-secondary)',
+                cursor: 'pointer',
+              }}
+            >
+              <EyeIcon active={selected} />
+              {selected ? 'Showing in viewport' : 'Show screenshot'}
+            </button>
+          )}
+        </div>
+      )}
     </div>
   )
 }
@@ -276,7 +407,7 @@ export default function TaskPanel({
             planStep={planStepMap[step.step_number]}
             isActive={isRunning && i === steps.length - 1}
             selected={selectedStepIdx === i}
-            onClick={() => onSelectStep?.(i)}
+            onPin={() => onSelectStep?.(i)}
           />
         ))}
 
