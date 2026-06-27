@@ -5,69 +5,20 @@ import { useTaskRunner } from './hooks/useTaskRunner'
 import { useTaskHistory } from './hooks/useTaskHistory'
 
 import Sidebar from './components/Sidebar'
+import TopBar from './components/TopBar'
+import TaskPanel from './components/TaskPanel'
 import BrowserViewport from './components/BrowserViewport'
-import ActivityFeed from './components/ActivityFeed'
-import GoalInput from './components/GoalInput'
-import ApprovalModal from './components/ApprovalModal'
-import StatusBadge from './components/StatusBadge'
 
 const API_URL = 'http://localhost:8000'
 
-function MainPanel({ taskState, replan, onSubmitGoal, onApprove, onDeny }) {
-  const isRunning = taskState.status === 'connecting' || taskState.status === 'planning' || taskState.status === 'running'
-  const lastStep = taskState.steps[taskState.steps.length - 1]
-  const currentTool = isRunning && lastStep ? lastStep.tool : null
-
-  return (
-    <div className="flex flex-col flex-1 min-w-0 min-h-0 h-full bg-[#111111]">
-      {/* Top bar */}
-      <div className="flex-shrink-0 flex items-center justify-between px-4 py-2 border-b border-[#2a2a2a] bg-[#161616]">
-        <div className="flex items-center gap-2">
-          <span className="text-gray-400 text-xs">
-            {taskState.status === 'idle' ? 'Ready' : ''}
-          </span>
-        </div>
-        <StatusBadge
-          status={taskState.pendingApproval ? 'waiting_approval' : taskState.status}
-        />
-      </div>
-
-      {/* Split: viewport (top) + feed (bottom) */}
-      <div className="flex flex-col flex-1 min-h-0">
-        {/* Browser viewport — 45% of available height */}
-        <div className="flex-shrink-0" style={{ height: '45%' }}>
-          <BrowserViewport
-            screenshotUrl={taskState.latestScreenshot}
-            status={taskState.status}
-            currentTool={currentTool}
-          />
-        </div>
-
-        {/* Divider */}
-        <div className="flex-shrink-0 h-px bg-[#2a2a2a]" />
-
-        {/* Activity feed — fills remaining space */}
-        <div className="flex flex-col flex-1 min-h-0">
-          {/* Feed header */}
-          <div className="flex-shrink-0 flex items-center px-4 py-2 border-b border-[#1e1e1e]">
-            <span className="text-gray-600 text-xs font-medium uppercase tracking-wider">Activity</span>
-          </div>
-
-          <ActivityFeed
-            status={taskState.status}
-            plan={taskState.plan}
-            replan={replan}
-            steps={taskState.steps}
-            finalAnswer={taskState.finalAnswer}
-            metrics={taskState.metrics}
-          />
-        </div>
-      </div>
-
-      {/* Goal input bar */}
-      <GoalInput onSubmit={onSubmitGoal} isRunning={isRunning} />
-    </div>
-  )
+// Derive the current page URL from step data (last navigate target / url field).
+function extractUrl(steps) {
+  for (let i = steps.length - 1; i >= 0; i--) {
+    const s = steps[i]
+    if (s.url) return s.url
+    if (s.tool === 'navigate' && s.target) return s.target
+  }
+  return null
 }
 
 export default function App() {
@@ -75,37 +26,34 @@ export default function App() {
   const { history, refetch } = useTaskHistory()
   const [selectedTaskId, setSelectedTaskId] = useState(null)
   const [replayState, setReplayState] = useState(null) // synthetic state for historical tasks
-  const [replan, setReplan] = useState(null)
+  const [activeGoal, setActiveGoal] = useState('')
+  const [historyOpen, setHistoryOpen] = useState(false)
 
   // The active displayed state: live task or loaded replay
   const displayState = selectedTaskId && replayState ? replayState : taskState
+  const liveRunning =
+    taskState.status === 'connecting' || taskState.status === 'planning' || taskState.status === 'running'
 
   const handleSubmitGoal = useCallback(async (goal) => {
     setSelectedTaskId(null)
     setReplayState(null)
-    setReplan(null)
+    setActiveGoal(goal)
     const taskId = await start(goal)
     if (taskId) {
-      // After task completes, the history hook polls; also trigger immediately
-      // We'll refetch after a short delay to let the DB write complete
       setTimeout(refetch, 2000)
       setSelectedTaskId(taskId)
     }
   }, [start, refetch])
 
   const handleSelectTask = useCallback(async (taskId) => {
-    // If this is the current live task, just select it
-    if (taskId === selectedTaskId && !replayState) {
-      return
-    }
+    setHistoryOpen(false)
+    if (taskId === selectedTaskId && !replayState) return
 
-    // Load from replay endpoint
     try {
       const res = await fetch(`${API_URL}/replay/${taskId}`)
       if (!res.ok) return
       const data = await res.json()
 
-      // Build synthetic task state from the replay report
       const syntheticState = {
         status: data.status ?? 'completed',
         plan: data.plan ?? null,
@@ -121,47 +69,101 @@ export default function App() {
       }
       setReplayState(syntheticState)
       setSelectedTaskId(taskId)
-      setReplan(null)
+      const fromHistory = history.find(t => t.task_id === taskId)
+      setActiveGoal(data.goal ?? fromHistory?.goal ?? '')
     } catch {
       // ignore
     }
-  }, [selectedTaskId, replayState])
+  }, [selectedTaskId, replayState, history])
 
   const handleNewTask = useCallback(() => {
     setSelectedTaskId(null)
     setReplayState(null)
-    setReplan(null)
+    setActiveGoal('')
+    setHistoryOpen(false)
     reset()
+  }, [reset])
+
+  const handleStop = useCallback(() => {
+    reset()
+    setSelectedTaskId(null)
+    setReplayState(null)
+    setActiveGoal('')
   }, [reset])
 
   const handleApprove = useCallback(() => sendApproval(true), [sendApproval])
   const handleDeny = useCallback(() => sendApproval(false), [sendApproval])
 
+  const pageUrl = extractUrl(displayState.steps)
+
   return (
-    <div className="flex h-full overflow-hidden bg-[#0f0f0f]">
-      <Sidebar
-        history={history}
-        selectedTaskId={selectedTaskId}
-        onSelectTask={handleSelectTask}
-        onNewTask={handleNewTask}
+    <div style={{ display: 'flex', flexDirection: 'column', height: '100vh', overflow: 'hidden', background: 'var(--bg-page)' }}>
+      <TopBar
+        taskId={selectedTaskId}
+        status={displayState.status}
+        stepCount={displayState.steps.length}
+        totalSteps={displayState.plan?.estimated_steps}
+        isRunning={liveRunning}
+        onStop={handleStop}
       />
 
-      <MainPanel
-        taskState={displayState}
-        replan={replan}
-        onSubmitGoal={handleSubmitGoal}
-        onApprove={handleApprove}
-        onDeny={handleDeny}
-      />
-
-      {/* Approval modal — only shown for live tasks */}
-      {taskState.pendingApproval && (
-        <ApprovalModal
-          approval={taskState.pendingApproval}
-          onApprove={handleApprove}
-          onDeny={handleDeny}
+      {/* Two-panel row */}
+      <div style={{ position: 'relative', display: 'flex', height: 'calc(100vh - 40px)', overflow: 'hidden' }}>
+        <TaskPanel
+          goal={activeGoal}
+          status={displayState.status}
+          plan={displayState.plan}
+          steps={displayState.steps}
+          finalAnswer={displayState.finalAnswer}
+          metrics={displayState.metrics}
+          onSubmitGoal={handleSubmitGoal}
+          onToggleHistory={() => setHistoryOpen(o => !o)}
         />
-      )}
+
+        {/* Right: browser hero */}
+        <div style={{ flex: 1, minWidth: 0, background: 'var(--bg-page)' }}>
+          <BrowserViewport
+            screenshotUrl={displayState.latestScreenshot}
+            pageUrl={pageUrl}
+            approval={taskState.pendingApproval}
+            onApprove={handleApprove}
+            onDeny={handleDeny}
+          />
+        </div>
+
+        {/* History drawer overlay */}
+        <div
+          onClick={() => setHistoryOpen(false)}
+          style={{
+            position: 'absolute',
+            inset: 0,
+            zIndex: 30,
+            background: 'rgba(0,0,0,0.4)',
+            opacity: historyOpen ? 1 : 0,
+            pointerEvents: historyOpen ? 'auto' : 'none',
+            transition: 'opacity 200ms ease',
+          }}
+        />
+        <div
+          style={{
+            position: 'absolute',
+            top: 0,
+            bottom: 0,
+            left: 0,
+            zIndex: 31,
+            height: '100%',
+            transform: historyOpen ? 'translateX(0)' : 'translateX(-100%)',
+            transition: 'transform 200ms ease',
+          }}
+        >
+          <Sidebar
+            history={history}
+            selectedTaskId={selectedTaskId}
+            onSelectTask={handleSelectTask}
+            onNewTask={handleNewTask}
+          />
+        </div>
+      </div>
     </div>
   )
 }
