@@ -552,6 +552,7 @@ class ExecutorAgent:
         approval_callback=None,
         step_offset: int = 0,
         cancel_event=None,
+        task_id: str | None = None,
     ) -> list[StepResult]:
         """
         Run an agentic tool-calling loop driven by Groq function calling.
@@ -562,9 +563,15 @@ class ExecutorAgent:
         checked at the top of each step so a user "Stop" halts the loop before the
         next LLM/browser action — within one step — and the browser still tears
         down cleanly below.
+
+        task_id names the screenshot files. The crew passes the REAL task id so a
+        run's screenshots are unique; absent one (standalone use) we fall back to a
+        goal hash. Combined with step_offset this keeps parallel branches and
+        re-plans from overwriting each other's frames.
         """
         results = []
-        task_id = hashlib.md5(plan.goal.encode()).hexdigest()[:8]
+        if task_id is None:
+            task_id = hashlib.md5(plan.goal.encode()).hexdigest()[:8]
 
         # Only start a browser we own; a pooled/injected browser is already running.
         if self._owns_browser:

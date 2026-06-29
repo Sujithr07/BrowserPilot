@@ -68,12 +68,13 @@ class AgentFlowCrew:
             # Step 2/3: Execute (+ replan once on failure), parallel or sequential.
             if len(branches) > 1:
                 results = await self._run_parallel(
-                    branches, approval_callback, emit, cancel_event=cancel_event
+                    branches, approval_callback, emit, cancel_event=cancel_event,
+                    task_id=task_id,
                 )
             else:
                 results = await self._run_branch(
                     self.executor, branches[0], approval_callback, emit,
-                    step_offset=0, cancel_event=cancel_event,
+                    step_offset=0, cancel_event=cancel_event, task_id=task_id,
                 )
 
             # Stopped by the user: skip the verifier (another LLM call) and persist
@@ -162,15 +163,16 @@ class AgentFlowCrew:
     # ── Execution ───────────────────────────────────────────────────────────--
     async def _run_branch(
         self, executor, plan, approval_callback, emit, step_offset=0, branch=None,
-        cancel_event=None,
+        cancel_event=None, task_id=None,
     ) -> list[StepResult]:
         """Execute one plan, emit each step, and replan once if it ends on a
         failure. This is the original sequential pipeline, factored out so both
         the single-branch and per-branch parallel paths share it. `branch` (a
-        0-based index, or None for a single-branch task) tags the emitted steps."""
+        0-based index, or None for a single-branch task) tags the emitted steps.
+        `task_id` names the screenshots; step_offset keeps branches from colliding."""
         results = await executor.execute_plan(
             plan, approval_callback=approval_callback, step_offset=step_offset,
-            cancel_event=cancel_event,
+            cancel_event=cancel_event, task_id=task_id,
         )
         await self._emit_steps(results, branch, emit)
 
@@ -188,13 +190,14 @@ class AgentFlowCrew:
                 approval_callback=approval_callback,
                 step_offset=step_offset + len(results),
                 cancel_event=cancel_event,
+                task_id=task_id,
             )
             await self._emit_steps(recovery_results, branch, emit)
             results = successful + recovery_results
         return results
 
     async def _run_parallel(
-        self, branches, approval_callback, emit, cancel_event=None
+        self, branches, approval_callback, emit, cancel_event=None, task_id=None
     ) -> list[StepResult]:
         """Run branches concurrently and merge their step results. Branch 0 uses
         the primary executor; extra branches get standalone browsers so the pool
@@ -204,6 +207,7 @@ class AgentFlowCrew:
             return await self._run_branch(
                 executor, branch, approval_callback, emit,
                 step_offset=i * _BRANCH_STRIDE, branch=i, cancel_event=cancel_event,
+                task_id=task_id,
             )
 
         branch_results = await asyncio.gather(

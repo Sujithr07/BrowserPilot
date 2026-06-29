@@ -59,6 +59,8 @@ Thumbs.db
 .coverage
 htmlcov/
 
+check_setup.py
+
 # Celery
 celerybeat-schedule
 celerybeat.pid

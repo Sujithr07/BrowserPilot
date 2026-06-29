@@ -3,9 +3,11 @@ import json
 import os
 import uuid
 import contextlib
+from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
 
 from backend import config
@@ -18,32 +20,10 @@ from backend.logging_config import configure_logging, get_logger
 configure_logging()
 log = get_logger("agentflow.api")
 
-app = FastAPI(title="AgentFlow")
 
-# CORS middleware
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
-
-# Serve screenshots directory so the frontend can display captured page images.
-os.makedirs("screenshots", exist_ok=True)
-app.mount("/screenshots", StaticFiles(directory="screenshots"), name="screenshots")
-
-# ── In-process (USE_QUEUE=0) transport state ────────────────────────────────────
-# Used only when the job queue is disabled: the crew runs in this process and
-# streams over these in-memory maps (legacy behavior, no Redis required).
-active_tasks: dict[str, str] = {}
-websocket_connections: dict[str, WebSocket] = {}
-approval_futures: dict[str, asyncio.Future] = {}
-cancel_events: dict[str, asyncio.Event] = {}
-
-
-@app.on_event("startup")
-async def startup():
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    # Startup ────────────────────────────────────────────────────────────────
     await init_db()
     if config.USE_QUEUE:
         # Lazy imports so the app still boots without redis/arq installed when
@@ -60,10 +40,10 @@ async def startup():
         app.state.bus = None
         log.info("api.startup", extra={"mode": "in-process"})
 
+    yield
 
-@app.on_event("shutdown")
-async def shutdown():
-    """Graceful shutdown: release Redis connections (uvicorn calls this on SIGTERM)."""
+    # Shutdown ─────────────────────────────────────────────────────────────────
+    # Release Redis connections (uvicorn runs this on SIGTERM).
     arq = getattr(app.state, "arq", None)
     if arq is not None:
         await arq.aclose()
@@ -71,6 +51,33 @@ async def shutdown():
     if bus is not None:
         await bus.close()
     log.info("api.shutdown")
+
+
+app = FastAPI(title="AgentFlow", lifespan=lifespan)
+
+# CORS middleware. allow_credentials must be False while origins is the "*"
+# wildcard — browsers reject credentialed requests against a wildcard origin, and
+# this API is token/cookie-less anyway. Pin allow_origins to a real list if that
+# changes.
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=False,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+# Serve screenshots directory so the frontend can display captured page images.
+os.makedirs("screenshots", exist_ok=True)
+app.mount("/screenshots", StaticFiles(directory="screenshots"), name="screenshots")
+
+# ── In-process (USE_QUEUE=0) transport state ────────────────────────────────────
+# Used only when the job queue is disabled: the crew runs in this process and
+# streams over these in-memory maps (legacy behavior, no Redis required).
+active_tasks: dict[str, str] = {}
+websocket_connections: dict[str, WebSocket] = {}
+approval_futures: dict[str, asyncio.Future] = {}
+cancel_events: dict[str, asyncio.Event] = {}
 
 
 @app.post("/run-task")
@@ -219,7 +226,9 @@ async def get_tasks(limit: int = 50):
 async def replay_task(task_id: str):
     task = await get_task(task_id)
     if task is None:
-        return {"error": "Task not found"}, 404
+        # Returning a (dict, 404) tuple does NOT set the status code in FastAPI —
+        # it serializes the tuple as a 200. Use JSONResponse to send a real 404.
+        return JSONResponse({"error": "Task not found"}, status_code=404)
     return task
 
 

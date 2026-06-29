@@ -1,0 +1,10 @@
+[tool.pytest.ini_options]
+# Only collect the real unit-test package; keeps pytest from picking up the
+# root-level connectivity script (check_setup.py) or the eval harness.
+testpaths = ["tests"]
+# Put the repo root on sys.path so tests can `from backend import ...`.
+pythonpath = ["."]
+addopts = "-q"
+# pytest-asyncio: treat `async def test_*` as coroutine tests automatically, so
+# the async crew/executor tests don't each need an @pytest.mark.asyncio.
+asyncio_mode = "auto"

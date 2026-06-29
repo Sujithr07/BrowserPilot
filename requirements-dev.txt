@@ -1,0 +1,4 @@
+# Dev/test-only dependencies. Installed in CI (.github/workflows/tests.yml) on
+# top of requirements.txt. Keep runtime deps out of here.
+pytest
+pytest-asyncio

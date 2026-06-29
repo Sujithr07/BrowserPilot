@@ -13,8 +13,9 @@ METRICS_ENABLED=0   # zero overhead: every metrics entry point returns on line 1
 ```
 
 When disabled, no response is inspected, `litellm.completion_cost` is never
-called, no lock is taken, and no per-task state is allocated. (Verified by a test
-that passes a response object which raises on *any* attribute access — nothing
+called, no lock is taken, and no per-task state is allocated. (Verified by
+`tests/test_metrics.py::test_record_call_is_noop_when_disabled`, which passes a
+response object that raises on *any* attribute access — nothing
 touches it while disabled.)
 
 ## What is measured and how
