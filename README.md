@@ -76,7 +76,7 @@ selected by the `USE_QUEUE` flag:
                  enqueue              af:events:{id} (pub/sub)
   client ──HTTP──► API ──arq──► Redis ──────► worker ──► AgentFlowCrew
      ▲    WS /ws/task/{id}          ▲            │              │ leases
-     └───────────────────────────────┘          │              ▼
+     └──────────────────────────────┘            │              ▼
         API subscribes to af:events:{id}         │        BrowserPool (N contexts)
         and forwards to the WebSocket.           │
         Approvals: WS ─► af:approval:{id} ───────┘ (worker blocks awaiting it)
