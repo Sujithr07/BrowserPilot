@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useState, useRef, useEffect } from 'react'
 
 const BRANCH_STRIDE = 1000
 
@@ -291,6 +291,21 @@ export default function TaskPanel({
   const [focused, setFocused] = useState(false)
   const [metricsOpen, setMetricsOpen] = useState(false)
 
+  // Keep the step log pinned to the newest row as steps stream in — otherwise
+  // each row's entrance animation plays off-screen below the fold. We only
+  // follow when the user is already at the bottom, so scrolling up to read an
+  // earlier step (or expanding one) doesn't yank them back down.
+  const logRef = useRef(null)
+  const stickRef = useRef(true)
+  const onLogScroll = () => {
+    const el = logRef.current
+    if (el) stickRef.current = el.scrollHeight - el.scrollTop - el.clientHeight < 48
+  }
+  useEffect(() => {
+    const el = logRef.current
+    if (el && stickRef.current) el.scrollTop = el.scrollHeight
+  }, [steps.length])
+
   const isRunning = status === 'connecting' || status === 'planning' || status === 'running'
   const lastStep = steps[steps.length - 1]
 
@@ -399,7 +414,11 @@ export default function TaskPanel({
       </div>
 
       {/* Section C — Step log */}
-      <div style={{ flex: 1, minHeight: 0, padding: '18px 20px', overflowY: 'auto', scrollbarWidth: 'thin' }}>
+      <div
+        ref={logRef}
+        onScroll={onLogScroll}
+        style={{ flex: 1, minHeight: 0, padding: '18px 20px', overflowY: 'auto', scrollbarWidth: 'thin' }}
+      >
         <div style={{ ...label, marginBottom: 12 }}>Steps</div>
 
         {/* Plan as the first entry */}
