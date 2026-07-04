@@ -72,33 +72,51 @@ selected by the `USE_QUEUE` flag:
   **worker** runs the crew against a pre-warmed **BrowserPool** and fans progress
   back over **Redis pub/sub**. Horizontally scalable (`--scale worker=N`).
 
-```
-                 enqueue              af:events:{id} (pub/sub)
-  client ──HTTP──► API ──arq──► Redis ──────► worker ──► AgentFlowCrew
-     ▲    WS /ws/task/{id}          ▲            │              │ leases
-     └───────────────────────────────┘          │              ▼
-        API subscribes to af:events:{id}         │        BrowserPool (N contexts)
-        and forwards to the WebSocket.           │
-        Approvals: WS ─► af:approval:{id} ───────┘ (worker blocks awaiting it)
+```mermaid
+flowchart LR
+    Client(["Client"])
+    API["API<br/>(FastAPI)"]
+    Redis[("Redis")]
+    Worker["Worker<br/>(arq)"]
+    Crew["AgentFlowCrew"]
+    Pool[["BrowserPool<br/>(N contexts)"]]
+
+    Client -- "POST /run-task" --> API
+    API -- "enqueue job" --> Redis
+    Redis -- "dequeue job" --> Worker
+    Worker --> Crew
+    Crew -- "leases" --> Pool
+
+    Worker -- "publish af:events:{id}" --> Redis
+    Redis -- "subscribe af:events:{id}" --> API
+    API -- "WS /ws/task/{id}" --> Client
+
+    Client -- "approval_response" --> API
+    API -- "publish af:approval:{id}" --> Redis
+    Redis -- "blocking read" --> Worker
 ```
 
 ### The agent crew
 
-```
-  Goal ──► PlannerAgent ──► ExecutorAgent ──► VerifierAgent ──► TaskReport
-              │                  │                  │
-       decompose into      agentic tool-          LLM-as-checker:
-       parallel branches   calling loop:          "was the goal met?"
-       (or a single plan)  navigate / click /     + final answer
-                           type / extract /        + status
-                           search / scroll         + extracted data
-                                │
-                           each step:
-                           1. LLM picks a tool (function calling)
-                           2. browser executes it
-                           3. screenshot + Set-of-Marks annotation
-                           4. vision model observes the result
-                           5. observation fed back into the loop
+```mermaid
+flowchart LR
+    Goal(["Goal"])
+    Planner["PlannerAgent<br/>decompose into<br/>parallel branches<br/>(or a single plan)"]
+    Executor["ExecutorAgent<br/>agentic tool-calling loop:<br/>navigate / click / type /<br/>extract / search / scroll"]
+    Verifier["VerifierAgent<br/>LLM-as-checker:<br/>was the goal met?"]
+    Report(["TaskReport<br/>answer + status"])
+
+    Goal --> Planner --> Executor --> Verifier --> Report
+
+    subgraph Loop [" "]
+        direction LR
+        S1["1. LLM picks a tool"] --> S2["2. Browser executes it"]
+        S2 --> S3["3. Screenshot + Set-of-Marks"]
+        S3 --> S4["4. Vision model observes result"]
+        S4 -. "fed back" .-> S1
+    end
+
+    Executor -. "each step" .-> Loop
 ```
 
 - **PlannerAgent** ([backend/agents/planner.py](backend/agents/planner.py)) —
